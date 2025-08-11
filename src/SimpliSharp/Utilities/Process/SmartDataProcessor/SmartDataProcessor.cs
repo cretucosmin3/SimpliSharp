@@ -10,7 +10,7 @@ public class SmartDataProcessor<T> : IDisposable
     /// <summary>
     /// Interval in milliseconds for the manager loop to check CPU usage and manage concurrency.
     /// </summary>
-    private const int ManagerLoopIntervalMs = 200;
+    private const int ManagerLoopIntervalMs = 100;
 
     /// <summary>
     /// A buffer to keep CPU usage below the absolute maximum, allowing for scaling.

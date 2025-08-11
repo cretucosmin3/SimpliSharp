@@ -4,13 +4,11 @@ class Program
 {
     static void Main()
     {
-        using var processor = new SmartDataProcessor<int>(maxCpuUsage: 60);
-
         Console.WriteLine("Starting data processing...");
 
+        using var processor = new SmartDataProcessor<int>(maxCpuUsage: 95);
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-        var tasksCount = 5000;
+        var tasksCount = 1000;
 
         for (int i = 0; i < tasksCount; i++)
         {
@@ -32,12 +30,9 @@ class Program
             var cursorPos = Console.CursorTop;
             Console.SetCursorPosition(0, cursorPos);
             Console.Write($"Processing item {i + 1} of {tasksCount}...");
-
-            Thread.Sleep(2);
         }
 
         processor.WaitForAllAsync().Wait();
-
         stopwatch.Stop();
 
         Console.WriteLine($"Processing completed in {stopwatch.ElapsedMilliseconds} ms | {stopwatch.Elapsed.TotalSeconds} seconds");
