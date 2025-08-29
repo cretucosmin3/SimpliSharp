@@ -10,12 +10,12 @@ public class SmartDataProcessor<T> : IDisposable
     /// <summary>
     /// Interval in milliseconds for the manager loop to check CPU usage and manage concurrency.
     /// </summary>
-    private const int ManagerLoopIntervalMs = 100;
+    private const int ManagerLoopIntervalMs = 50;
 
     /// <summary>
     /// A buffer to keep CPU usage below the absolute maximum, allowing for scaling.
     /// </summary>
-    private const double CpuHeadroomBuffer = 10;
+    private const double CpuHeadroomBuffer = 5;
 
     /// <summary>
     /// Threshold in milliseconds to consider a job "short" for faster concurrency scaling.
@@ -25,12 +25,12 @@ public class SmartDataProcessor<T> : IDisposable
     /// <summary>
     /// The maximum number of job duration samples to keep for calculating the average.
     /// </summary>
-    private const int MaxDurationSamples = 50;
+    private const int MaxDurationSamples = 25;
 
     /// <summary>
     /// The weight for the Exponential Moving Average (EMA) for smoothing CPU readings.
     /// </summary>
-    private const double SmoothingFactor = 0.2;
+    private const double SmoothingFactor = 0.3;
 
     /// <summary>
     /// A multiplier to determine the queue size limit based on the current number of workers.
@@ -45,6 +45,7 @@ public class SmartDataProcessor<T> : IDisposable
     private readonly Thread _managerThread;
     private readonly CancellationTokenSource _cts = new();
     private readonly ICpuMonitor _cpuMonitor;
+    internal readonly ManualResetEvent ManagerLoopCycle = new(false);
 
     private double _smoothedCpu = 0;
     private readonly ConcurrentQueue<double> _jobDurations = new();
@@ -57,6 +58,15 @@ public class SmartDataProcessor<T> : IDisposable
         _cpuMonitor = Environment.OSVersion.Platform == PlatformID.Unix
             ? new LinuxCpuMonitor()
             : new NullCpuMonitor();
+
+        _managerThread = new Thread(ManagerLoop) { IsBackground = true };
+        _managerThread.Start();
+    }
+
+    internal SmartDataProcessor(double maxCpuUsage, ICpuMonitor cpuMonitor)
+    {
+        _maxCpuUsage = maxCpuUsage;
+        _cpuMonitor = cpuMonitor;
 
         _managerThread = new Thread(ManagerLoop) { IsBackground = true };
         _managerThread.Start();
@@ -107,6 +117,7 @@ public class SmartDataProcessor<T> : IDisposable
                 Console.WriteLine($"Error in ManagerLoop: {ex.Message}");
             }
 
+            ManagerLoopCycle.Set();
             Thread.Sleep(ManagerLoopIntervalMs);
         }
     }

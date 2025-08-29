@@ -6,7 +6,7 @@ class Program
     {
         Console.WriteLine("Starting data processing...");
 
-        using var processor = new SmartDataProcessor<int>(maxCpuUsage: 95);
+        using var processor = new SmartDataProcessor<int>(maxCpuUsage: 40);
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var tasksCount = 1000;
 
@@ -39,7 +39,4 @@ class Program
         Console.WriteLine("All processing done");
     }
 }
-
-
-
 
