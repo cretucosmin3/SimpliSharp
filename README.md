@@ -1,5 +1,7 @@
 # SimpliSharp
 
+[![.NET](https://github.com/kozmo/SimpliSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/kozmo/SimpliSharp/actions/workflows/dotnet.yml)
+
 SimpliSharp is a .NET library designed to simplify common programming tasks with a focus on performance and ease of use. As the library grows, it will be populated with a variety of tools and utilities to help developers write cleaner, more efficient code.
 
 ## Features

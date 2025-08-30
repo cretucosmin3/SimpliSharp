@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 
@@ -55,9 +56,22 @@ public class SmartDataProcessor<T> : IDisposable
     {
         _maxCpuUsage = maxCpuUsage;
 
-        _cpuMonitor = Environment.OSVersion.Platform == PlatformID.Unix
-            ? new LinuxCpuMonitor()
-            : new NullCpuMonitor();
+        if (OperatingSystem.IsWindows())
+        {
+            _cpuMonitor = new WindowsCpuMonitor();
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            _cpuMonitor = new LinuxCpuMonitor();
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            _cpuMonitor = new MacCpuMonitor();
+        }
+        else
+        {
+            _cpuMonitor = new NullCpuMonitor();
+        }
 
         _managerThread = new Thread(ManagerLoop) { IsBackground = true };
         _managerThread.Start();

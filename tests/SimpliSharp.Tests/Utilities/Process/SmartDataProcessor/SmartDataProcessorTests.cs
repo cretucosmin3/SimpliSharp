@@ -1,7 +1,6 @@
 using SimpliSharp.Utilities.Process;
-using SimpliSharp.Tests.Utilities.Process;
 
-namespace SimpliSharp.Tests;
+namespace SimpliSharp.Tests.Utilities.Process.SmartDataProcessor;
 
 [TestClass]
 public class SmartDataProcessorTests

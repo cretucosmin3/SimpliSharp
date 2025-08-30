@@ -35,6 +35,7 @@ class Program
         processor.WaitForAllAsync().Wait();
         stopwatch.Stop();
 
+        Console.WriteLine();
         Console.WriteLine($"Processing completed in {stopwatch.ElapsedMilliseconds} ms | {stopwatch.Elapsed.TotalSeconds} seconds");
         Console.WriteLine("All processing done");
     }
