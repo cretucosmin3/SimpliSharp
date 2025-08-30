@@ -28,4 +28,4 @@ processor.EnqueueOrWait(dtIn, data =>
 });
 ```
 
-![Alt text for your image](./assets/75-cpu-usage.png)
+![Alt text for your image](https://raw.githubusercontent.com/cretucosmin3/SimpliSharp/refs/heads/main/assets/75-cpu-usage.png)
