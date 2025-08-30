@@ -106,15 +106,22 @@ public class SmartDataProcessorTests
         };
 
         // Act
+        // Let the manager loop run a few times to ramp up the smoothed CPU value
+        for (int i = 0; i < 10; i++)
+        {
+            processor.ManagerLoopCycle.WaitOne(100);
+            processor.ManagerLoopCycle.Reset();
+        }
+        
         var enqueueTask = Task.Run(() => processor.EnqueueOrWait(1, action));
-        processor.ManagerLoopCycle.WaitOne();
+        await Task.Delay(50); // Give the task a chance to block inside EnqueueOrWait
 
         // Assert
         Assert.IsFalse(enqueueTask.IsCompleted);
 
         // Act
         cpuMonitor.SetCpuUsage(50);
-        processor.ManagerLoopCycle.WaitOne();
+        processor.ManagerLoopCycle.WaitOne(100); // Let the manager loop run to detect the change
         await enqueueTask;
 
         // Assert
