@@ -19,31 +19,13 @@ The `SmartDataProcessor<T>` is designed to process a queue of items in parallel,
 Usage example:
 
 ```csharp
-using SimpliSharp.Utilities.Process;
+using var processor = new SmartDataProcessor<int>(maxCpuUsage: 75);
 
-class Program
+...
+processor.EnqueueOrWait(dtIn, data =>
 {
-    static void Main()
-    {
-        using var processor = new SmartDataProcessor<int>(maxCpuUsage: 60);
-
-        for (int i = 0; i < 200; i++)
-        {
-            processor.EnqueueOrWait(i, data =>
-            {
-                double sum = 0;
-                for (int j = 0; j < 10_000_000; j++)
-                {
-                    double value = Math.Sqrt(j) * Math.Sin(j % 360) + Math.Log(j + 1);
-                    if (value > 1000)
-                        sum -= value / 3.0;
-                    else
-                        sum += value * 2.5;
-                }
-            });
-        }
-
-        processor.WaitForAllAsync().Wait();
-    }
-}
+    ...
+});
 ```
+
+![Alt text for your image](./assets/75-cpu-usage.png)
