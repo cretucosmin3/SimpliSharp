@@ -1,6 +1,8 @@
 # SimpliSharp
 
-[![.NET](https://github.com/kozmo/SimpliSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/kozmo/SimpliSharp/actions/workflows/dotnet.yml)
+[![.NET](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml) [![GitHub last commit](https://img.shields.io/github/last-commit/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/commits/main)
+[![GitHub stars](https://img.shields.io/github/stars/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/stargazers)
+
 
 SimpliSharp is a .NET library designed to simplify common programming tasks with a focus on performance and ease of use. As the library grows, it will be populated with a variety of tools and utilities to help developers write cleaner, more efficient code.
 
