@@ -6,10 +6,10 @@ class Program
     {
         Console.WriteLine("Starting data processing...");
 
-        using var processor = new SmartDataProcessor<int>(maxCpuUsage: 75);
+        using var processor = new SmartDataProcessor<int>(maxCpuUsage: 90);
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var tasksCount = 2000;
-
+        
         for (int i = 0; i < tasksCount; i++)
         {
             int line = i;
@@ -27,8 +27,7 @@ class Program
                 }
             });
 
-            var cursorPos = Console.CursorTop;
-            Console.SetCursorPosition(0, cursorPos);
+            Console.SetCursorPosition(0, Console.CursorTop);
             Console.Write($"Processing item {i + 1} of {tasksCount}...");
         }
 
@@ -36,7 +35,15 @@ class Program
         stopwatch.Stop();
 
         Console.WriteLine();
-        Console.WriteLine($"Processing completed in {stopwatch.ElapsedMilliseconds} ms | {stopwatch.Elapsed.TotalSeconds} seconds");
+        Console.WriteLine($"Processing completed in {stopwatch.Elapsed.TotalSeconds} seconds");
+        
+        var finalMetrics = processor.Metrics;
+        Console.WriteLine("--- Final Metrics ---");
+        Console.WriteLine($"Max Concurrency: {finalMetrics.MaxConcurrency}");
+        Console.WriteLine($"Best Job Duration: {finalMetrics.BestJobDuration:F2}ms");
+        Console.WriteLine($"Slowest Job Duration: {finalMetrics.SlowestJobDuration:F2}ms");
+        Console.WriteLine($"Average Job Duration: {finalMetrics.AverageJobDuration:F2}ms");
+        
         Console.WriteLine("All processing done");
     }
 }

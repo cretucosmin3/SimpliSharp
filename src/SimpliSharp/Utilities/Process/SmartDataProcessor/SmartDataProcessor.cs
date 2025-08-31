@@ -24,11 +24,6 @@ public class SmartDataProcessor<T> : IDisposable
     private const double ShortJobThresholdMs = 100;
 
     /// <summary>
-    /// The maximum number of job duration samples to keep for calculating the average.
-    /// </summary>
-    private const int MaxDurationSamples = 25;
-
-    /// <summary>
     /// The weight for the Exponential Moving Average (EMA) for smoothing CPU readings.
     /// </summary>
     private const double SmoothingFactor = 0.3;
@@ -49,10 +44,11 @@ public class SmartDataProcessor<T> : IDisposable
     internal readonly ManualResetEvent ManagerLoopCycle = new(false);
 
     private double _smoothedCpu = 0;
-    private readonly ConcurrentQueue<double> _jobDurations = new();
     private int _targetConcurrency = 1;
 
-    public SmartDataProcessor(double maxCpuUsage)
+    public ProcessingMetrics Metrics { get; } = new();
+
+    public SmartDataProcessor(double maxCpuUsage = 100)
     {
         _maxCpuUsage = maxCpuUsage;
 
@@ -143,8 +139,7 @@ public class SmartDataProcessor<T> : IDisposable
     {
         double cpuUsage = _cpuMonitor.GetCpuUsage();
         _smoothedCpu = (SmoothingFactor * cpuUsage) + (1 - SmoothingFactor) * _smoothedCpu;
-
-        double averageDuration = _jobDurations.IsEmpty ? 0 : _jobDurations.Average();
+        Metrics.UpdateSmoothedCpu(_smoothedCpu);
 
         if (_smoothedCpu > _maxCpuUsage && _targetConcurrency > 1)
         {
@@ -154,7 +149,7 @@ public class SmartDataProcessor<T> : IDisposable
                  && _targetConcurrency < Environment.ProcessorCount)
         {
             // Scale up faster for short jobs, otherwise scale up by one.
-            int increase = (averageDuration > 0 && averageDuration < ShortJobThresholdMs) ? 2 : 1;
+            int increase = (Metrics.AverageJobDuration > 0 && Metrics.AverageJobDuration < ShortJobThresholdMs) ? 2 : 1;
             _targetConcurrency = Math.Min(_targetConcurrency + increase, Environment.ProcessorCount);
         }
     }
@@ -169,6 +164,9 @@ public class SmartDataProcessor<T> : IDisposable
         {
             _runningTasks.TryRemove(task, out _);
         }
+
+        Metrics.UpdateConcurrency(_runningTasks.Count);
+        Metrics.UpdateQueueLength(_jobs.Count);
 
         int slotsToFill = _targetConcurrency - _runningTasks.Count;
         for (int i = 0; i < slotsToFill; i++)
@@ -186,10 +184,7 @@ public class SmartDataProcessor<T> : IDisposable
                     finally
                     {
                         sw.Stop();
-                        _jobDurations.Enqueue(sw.Elapsed.TotalMilliseconds);
-                        
-                        while (_jobDurations.Count > MaxDurationSamples)
-                            _jobDurations.TryDequeue(out _);
+                        Metrics.AddJobDuration(sw.Elapsed.TotalMilliseconds);
                     }
                 });
                 _runningTasks.TryAdd(task, true);
