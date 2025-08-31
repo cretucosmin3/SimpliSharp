@@ -8,10 +8,6 @@ SimpliSharp is a .NET library designed to simplify common programming tasks with
 
 ## Features
 
-*   **SmartDataProcessor**: A generic data processing class that intelligently manages concurrency based on real-time CPU usage. This is ideal for CPU-intensive tasks where you want to maximize throughput without overloading the system.
-
-## Usage
-
 ### SmartDataProcessor
 
 The `SmartDataProcessor<T>` is designed to process a queue of items in parallel, while automatically adjusting the level of concurrency to stay within a specified CPU usage limit.
@@ -21,11 +17,13 @@ Usage example:
 ```csharp
 using var processor = new SmartDataProcessor<int>(maxCpuUsage: 75);
 
-...
-processor.EnqueueOrWait(dtIn, data =>
+for (...)
 {
-    ...
-});
+    processor.EnqueueOrWait(dtIn, data =>
+    {
+        ...
+    });
+}
 ```
 
 ![Alt text for your image](https://raw.githubusercontent.com/cretucosmin3/SimpliSharp/refs/heads/main/assets/75-cpu-usage.png)

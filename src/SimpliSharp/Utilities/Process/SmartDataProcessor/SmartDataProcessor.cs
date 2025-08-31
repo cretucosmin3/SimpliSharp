@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Linq;
 
 namespace SimpliSharp.Utilities.Process;
 
@@ -45,12 +46,13 @@ public class SmartDataProcessor<T> : IDisposable
 
     private double _smoothedCpu = 0;
     private int _targetConcurrency = 1;
+    private double _lastAverageDuration;
 
     public ProcessingMetrics Metrics { get; } = new();
 
     public SmartDataProcessor(double maxCpuUsage = 100)
     {
-        _maxCpuUsage = maxCpuUsage;
+        _maxCpuUsage = Math.Max(maxCpuUsage - CpuHeadroomBuffer, CpuHeadroomBuffer);
 
         if (OperatingSystem.IsWindows())
         {
@@ -148,10 +150,19 @@ public class SmartDataProcessor<T> : IDisposable
         else if ((_smoothedCpu < _maxCpuUsage - CpuHeadroomBuffer || _cpuMonitor is NullCpuMonitor)
                  && _targetConcurrency < Environment.ProcessorCount)
         {
-            // Scale up faster for short jobs, otherwise scale up by one.
-            int increase = (Metrics.AverageJobDuration > 0 && Metrics.AverageJobDuration < ShortJobThresholdMs) ? 2 : 1;
-            _targetConcurrency = Math.Min(_targetConcurrency + increase, Environment.ProcessorCount);
+            // If the average duration is increasing, it means we might be adding too much concurrency.
+            if (Metrics.AverageJobDuration > _lastAverageDuration && _targetConcurrency > 1 && _lastAverageDuration > 0)
+            {
+                // Don't increase concurrency for now, let's see if the duration stabilizes.
+            }
+            else
+            {
+                int increase = (Metrics.AverageJobDuration > 0 && Metrics.AverageJobDuration < ShortJobThresholdMs) ? 2 : 1;
+                _targetConcurrency = Math.Min(_targetConcurrency + increase, Environment.ProcessorCount);
+            }
         }
+
+        _lastAverageDuration = Metrics.AverageJobDuration;
     }
 
     /// <summary>
