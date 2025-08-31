@@ -16,7 +16,9 @@ class Program
 
             processor.EnqueueOrWait(line, data =>
             {
+                int simMax = Random.Shared.Next(5_000_000, 20_000_000);
                 double sum = 0;
+
                 for (int j = 0; j < 10_000_000; j++)
                 {
                     double value = Math.Sqrt(j) * Math.Sin(j % 360) + Math.Log(j + 1);
@@ -28,7 +30,7 @@ class Program
             });
 
             Console.SetCursorPosition(0, Console.CursorTop);
-            Console.Write($"Processing item {i + 1} of {tasksCount}...");
+            Console.Write($"Processing item {i + 1} of {tasksCount} | queued: {processor.Metrics.QueueLength}");
         }
 
         processor.WaitForAllAsync().Wait();
@@ -38,11 +40,12 @@ class Program
         Console.WriteLine($"Processing completed in {stopwatch.Elapsed.TotalSeconds} seconds");
         
         var finalMetrics = processor.Metrics;
+        Console.WriteLine();
         Console.WriteLine("--- Final Metrics ---");
         Console.WriteLine($"Max Concurrency: {finalMetrics.MaxConcurrency}");
-        Console.WriteLine($"Best Job Duration: {finalMetrics.BestJobDuration:F2}ms");
-        Console.WriteLine($"Slowest Job Duration: {finalMetrics.SlowestJobDuration:F2}ms");
-        Console.WriteLine($"Average Job Duration: {finalMetrics.AverageJobDuration:F2}ms");
+        Console.WriteLine($"Fastest Job: {finalMetrics.MinTaskTime:F2}ms");
+        Console.WriteLine($"Slowest Job: {finalMetrics.MaxTaskTime:F2}ms");
+        Console.WriteLine($"Average Job: {finalMetrics.AvgTaskTime:F2}ms");
         
         Console.WriteLine("All processing done");
     }

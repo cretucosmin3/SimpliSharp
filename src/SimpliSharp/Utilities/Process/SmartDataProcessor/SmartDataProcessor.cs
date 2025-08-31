@@ -33,7 +33,7 @@ public class SmartDataProcessor<T> : IDisposable
     /// A multiplier to determine the queue size limit based on the current number of workers.
     /// This creates back-pressure to prevent the queue from growing too quickly.
     /// </summary>
-    private const int QueueBufferMultiplier = 10;
+    private const int QueueBufferMultiplier = 2;
 
     // --- State ---
     private readonly double _maxCpuUsage;
@@ -86,10 +86,16 @@ public class SmartDataProcessor<T> : IDisposable
 
     public void EnqueueOrWait(T data, Action<T> action)
     {
-        // Wait if CPU is saturated OR if the queue is growing too large relative to our processing power.
-        while ((_smoothedCpu > _maxCpuUsage && _cpuMonitor is not NullCpuMonitor) ||
-               (_jobs.Count > _targetConcurrency * QueueBufferMultiplier))
+        while (true)
         {
+            bool isCpuSaturated = _smoothedCpu > _maxCpuUsage && _cpuMonitor is not NullCpuMonitor;
+            bool isQueueOverloaded = _jobs.Count > _targetConcurrency * QueueBufferMultiplier;
+
+            if (!isCpuSaturated && !isQueueOverloaded)
+            {
+                break;
+            }
+
             Thread.Sleep(10);
         }
 
@@ -143,27 +149,45 @@ public class SmartDataProcessor<T> : IDisposable
         _smoothedCpu = (SmoothingFactor * cpuUsage) + (1 - SmoothingFactor) * _smoothedCpu;
         Metrics.UpdateSmoothedCpu(_smoothedCpu);
 
-        if (_smoothedCpu > _maxCpuUsage && _targetConcurrency > 1)
+        // --- Concurrency Decrease Logic ---
+        bool isCpuAboveMax = _smoothedCpu > _maxCpuUsage;
+        bool canReduceConcurrency = _targetConcurrency > 1;
+
+        if (isCpuAboveMax && canReduceConcurrency)
         {
             _targetConcurrency--;
+            _lastAverageDuration = Metrics.AvgTaskTime;
+            return;
         }
-        else if ((_smoothedCpu < _maxCpuUsage - CpuHeadroomBuffer || _cpuMonitor is NullCpuMonitor)
-                 && _targetConcurrency < Environment.ProcessorCount)
+
+        // --- Concurrency Increase Logic ---
+        bool hasCpuHeadroom = _smoothedCpu < _maxCpuUsage - CpuHeadroomBuffer;
+        bool isMonitorDisabled = _cpuMonitor is NullCpuMonitor;
+        bool canIncreaseConcurrency = _targetConcurrency < Environment.ProcessorCount;
+
+        if ((hasCpuHeadroom || isMonitorDisabled) && canIncreaseConcurrency)
         {
-            // If the average duration is increasing, it means we might be adding too much concurrency.
-            if (Metrics.AverageJobDuration > _lastAverageDuration && _targetConcurrency > 1 && _lastAverageDuration > 0)
+            // Check if adding threads is causing performance to degrade (contention).
+            bool isJobDurationIncreasing = Metrics.AvgTaskTime > _lastAverageDuration;
+            bool hasHistoricData = _lastAverageDuration > 0;
+
+            if (isJobDurationIncreasing && canReduceConcurrency && hasHistoricData)
             {
-                // Don't increase concurrency for now, let's see if the duration stabilizes.
+                // Duration is increasing, which might indicate thread contention.
+                // Hold the current concurrency level to allow the system to stabilize.
             }
             else
             {
-                int increase = (Metrics.AverageJobDuration > 0 && Metrics.AverageJobDuration < ShortJobThresholdMs) ? 2 : 1;
-                _targetConcurrency = Math.Min(_targetConcurrency + increase, Environment.ProcessorCount);
+                // If jobs are very short, we can be more aggressive in scaling up.
+                bool areJobsShort = Metrics.AvgTaskTime > 0 && Metrics.AvgTaskTime < ShortJobThresholdMs;
+                int increaseAmount = areJobsShort ? 2 : 1;
+                _targetConcurrency = Math.Min(_targetConcurrency + increaseAmount, Environment.ProcessorCount);
             }
         }
 
-        _lastAverageDuration = Metrics.AverageJobDuration;
+        _lastAverageDuration = Metrics.AvgTaskTime;
     }
+
 
     /// <summary>
     /// Launches new tasks from the queue to meet the target concurrency level.

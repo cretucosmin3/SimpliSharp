@@ -9,9 +9,9 @@ public class ProcessingMetrics
     private readonly ConcurrentQueue<double> _jobDurations = new();
     
     public int MaxConcurrency { get; private set; }
-    public double BestJobDuration { get; private set; } = double.MaxValue;
-    public double AverageJobDuration { get; private set; }
-    public double SlowestJobDuration { get; private set; }
+    public double MinTaskTime { get; private set; } = double.MaxValue;
+    public double AvgTaskTime { get; private set; }
+    public double MaxTaskTime { get; private set; }
     public int CurrentConcurrency { get; private set; }
     public int QueueLength { get; private set; }
     public double SmoothedCpu { get; private set; }
@@ -20,9 +20,9 @@ public class ProcessingMetrics
     {
         _jobDurations.Enqueue(duration);
         
-        BestJobDuration = Math.Min(BestJobDuration, duration);
-        SlowestJobDuration = Math.Max(SlowestJobDuration, duration);
-        AverageJobDuration = _jobDurations.Average();
+        MinTaskTime = Math.Min(MinTaskTime, duration);
+        MaxTaskTime = Math.Max(MaxTaskTime, duration);
+        AvgTaskTime = _jobDurations.Average();
 
         while (_jobDurations.Count > MaxDurationSamples)
             _jobDurations.TryDequeue(out _);
