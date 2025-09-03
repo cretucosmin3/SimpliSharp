@@ -1,10 +1,18 @@
-# SimpliSharp
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/simpli-sharp-light.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/simpli-sharp-dark.png">
+    <img alt="SimpliSharp" src="assets/simpli-sharp-dark.png" height="150">
+  </picture>
+  
+  <p style="max-width: 600px;">
+    <strong>SimpliSharp is a versatile C# utility library designed to streamline development with useful extension methods, helpers, data processing tools, and logging helpers.</strong>
+  </p>
 
-[![.NET](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml) [![GitHub last commit](https://img.shields.io/github/last-commit/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/commits/main)
+  [![.NET](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml)[![GitHub last commit](https://img.shields.io/github/last-commit/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/commits/main)
 [![GitHub stars](https://img.shields.io/github/stars/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/stargazers)
 
-
-SimpliSharp is a .NET library designed to simplify common programming tasks with a focus on performance and ease of use. As the library grows, it will be populated with a variety of tools and utilities to help developers write cleaner, more efficient code.
+</div>
 
 ## SmartDataProcessor
 
@@ -35,7 +43,7 @@ Batching enumerables using `Enumerables.Batch(batchSize)` or `Enumerables.BatchS
 
 ```csharp
 string[] sample = ["Red", "Blue", "Purple", "Black", "Yellow", "Pink"];
-string[][] batches = sample.Batch(2).ToArray();
+string[][] batches = sample.Batch(3).ToArray();
 
 // Batch 1: [Red, Blue, Purple]
 // Batch 2: [Black, Yellow, Pink]
