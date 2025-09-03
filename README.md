@@ -6,9 +6,7 @@
 
 SimpliSharp is a .NET library designed to simplify common programming tasks with a focus on performance and ease of use. As the library grows, it will be populated with a variety of tools and utilities to help developers write cleaner, more efficient code.
 
-## Features
-
-### SmartDataProcessor
+## SmartDataProcessor
 
 The `SmartDataProcessor<T>` is designed to process a queue of items in parallel, while automatically adjusting the level of concurrency to stay within a specified CPU usage limit.
 
@@ -27,3 +25,26 @@ for (...)
 ```
 
 ![Alt text for your image](https://raw.githubusercontent.com/cretucosmin3/SimpliSharp/refs/heads/main/assets/75-cpu-usage.png)
+
+
+## Enumerable Extensions
+
+### Batching
+
+Batching enumerables using `Enumerables.Batch(batchSize)` or `Enumerables.BatchSliding(windowSize)` will simply yield the requested batches, 
+
+```csharp
+string[] sample = ["Red", "Blue", "Purple", "Black", "Yellow", "Pink"];
+string[][] batches = sample.Batch(2).ToArray();
+
+// Batch 1: [Red, Blue, Purple]
+// Batch 2: [Black, Yellow, Pink]
+```
+
+```csharp
+int[] sample = [1, 2, 3];
+int[][] batches = sample.BatchSliding(2).ToArray();
+
+// Batch 1: [1, 2]
+// Batch 2: [2, 3]
+```
