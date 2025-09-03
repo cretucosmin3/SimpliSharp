@@ -1,12 +1,12 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/simpli-sharp-light.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/simpli-sharp-dark.png">
-    <img alt="SimpliSharp" src="assets/simpli-sharp-dark.png" height="150">
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/cretucosmin3/SimpliSharp/blob/main/assets/simpli-sharp-light.png?raw=true">
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/cretucosmin3/SimpliSharp/blob/main/assets/simpli-sharp-dark.png?raw=true">
+    <img alt="SimpliSharp" src="assets/simpli-sharp-dark.png" height="110">
   </picture>
   
-  <p style="max-width: 600px;">
-    <strong>SimpliSharp is a versatile C# utility library designed to streamline development with useful extension methods, helpers, data processing tools, and logging helpers.</strong>
+  <p style="max-width: 500px;">
+    <strong>SimpliSharp is a C# utility library designed to streamline development with useful extensions, helpers, data processing tools, and logging helpers.</strong>
   </p>
 
   [![.NET](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml)[![GitHub last commit](https://img.shields.io/github/last-commit/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/commits/main)
