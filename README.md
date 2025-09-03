@@ -5,11 +5,15 @@
     <img alt="SimpliSharp" src="assets/simpli-sharp-dark.png" height="110">
   </picture>
   
-  <p style="max-width: 500px;">
-    <strong>SimpliSharp is a C# utility library designed to streamline development with useful extensions, helpers, data processing tools, and logging helpers.</strong>
-  </p>
+<table width="600" align="center">
+  <tr>
+    <td align="center">
+      <strong>SimpliSharp is a C# utility library designed to streamline development with useful extensions, helpers, data processing tools, and logging helpers.</strong>
+    </td>
+  </tr>
+</table>
 
-  [![.NET](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml)[![GitHub last commit](https://img.shields.io/github/last-commit/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/commits/main)
+[![.NET](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml)[![GitHub last commit](https://img.shields.io/github/last-commit/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/commits/main)
 [![GitHub stars](https://img.shields.io/github/stars/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/stargazers)
 
 </div>
@@ -34,12 +38,11 @@ for (...)
 
 ![Alt text for your image](https://raw.githubusercontent.com/cretucosmin3/SimpliSharp/refs/heads/main/assets/75-cpu-usage.png)
 
-
 ## Enumerable Extensions
 
 ### Batching
 
-Batching enumerables using `Enumerables.Batch(batchSize)` or `Enumerables.BatchSliding(windowSize)` will simply yield the requested batches, 
+Batching enumerables using `Enumerables.Batch(batchSize)` or `Enumerables.BatchSliding(windowSize)` will simply yield the requested batches,
 
 ```csharp
 string[] sample = ["Red", "Blue", "Purple", "Black", "Yellow", "Pink"];
