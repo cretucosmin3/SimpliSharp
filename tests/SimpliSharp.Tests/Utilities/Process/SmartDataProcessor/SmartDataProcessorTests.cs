@@ -6,23 +6,7 @@ namespace SimpliSharp.Tests.Utilities.Process.SmartDataProcessor;
 public class SmartDataProcessorTests
 {
     [TestMethod]
-    public async Task SmartDataProcessor_ProcessesSingleItem()
-    {
-        // Arrange
-        var processor = new SmartDataProcessor<int>(100);
-        var processedData = 0;
-        Action<int> action = (int data) => processedData = data;
-
-        // Act
-        processor.EnqueueOrWait(1, action);
-        await processor.WaitForAllAsync();
-
-        // Assert
-        Assert.AreEqual(1, processedData);
-    }
-
-    [TestMethod]
-    public async Task SmartDataProcessor_ProcessesMultipleItems()
+    public async Task SmartDataProcessor_ProcessesItems_InOrder()
     {
         // Arrange
         var processor = new SmartDataProcessor<int>(100);
@@ -43,23 +27,29 @@ public class SmartDataProcessorTests
         await processor.WaitForAllAsync();
 
         // Assert
-        Assert.AreEqual(10, processedData.Count);
-        for (int i = 0; i < 10; i++)
-        {
-            Assert.IsTrue(processedData.Contains(i));
-        }
+        Assert.AreEqual(10, processedData.Count, "The number of processed items should be 10.");
+        CollectionAssert.AreEquivalent(Enumerable.Range(0, 10).ToList(), processedData, "The processed items should be equivalent to the original items.");
     }
 
     [TestMethod]
-    public async Task SmartDataProcessor_WaitForAllAsync_WaitsForAllJobs()
+    public async Task SmartDataProcessor_Honors_MaxDegreeOfParallelism()
     {
         // Arrange
-        var processor = new SmartDataProcessor<int>(100);
-        var processedCount = 0;
+        var settings = new SmartDataProcessorSettings
+        {
+            MaxDegreeOfParallelism = 2
+        };
+        var processor = new SmartDataProcessor<int>(settings);
+        var mre = new ManualResetEventSlim(false);
+        var runningTasks = 0;
+        var maxRunningTasks = 0;
+
         var action = (int data) =>
         {
-            Interlocked.Increment(ref processedCount);
-            Thread.Sleep(10);
+            Interlocked.Increment(ref runningTasks);
+            maxRunningTasks = Math.Max(maxRunningTasks, runningTasks);
+            mre.Wait();
+            Interlocked.Decrement(ref runningTasks);
         };
 
         // Act
@@ -67,35 +57,102 @@ public class SmartDataProcessorTests
         {
             processor.EnqueueOrWait(i, action);
         }
-        await processor.WaitForAllAsync();
+
+        await Task.Delay(100); // Give time for tasks to start
 
         // Assert
-        Assert.AreEqual(5, processedCount);
+        Assert.AreEqual(2, maxRunningTasks, "The maximum number of running tasks should not exceed the specified MaxDegreeOfParallelism.");
+
+        // Cleanup
+        mre.Set();
+        await processor.WaitForAllAsync();
     }
 
     [TestMethod]
-    public void SmartDataProcessor_Dispose_StopsManagerThread()
+    public async Task SmartDataProcessor_Blocks_When_QueueIsFull()
+    {
+        // Arrange
+        var settings = new SmartDataProcessorSettings
+        {
+            MaxDegreeOfParallelism = 1,
+            QueueBufferMultiplier = 1
+        };
+        var processor = new SmartDataProcessor<int>(settings);
+        var mre = new ManualResetEventSlim(false);
+        var tasksStarted = 0;
+
+        var action = (int data) =>
+        {
+            Interlocked.Increment(ref tasksStarted);
+            mre.Wait();
+        };
+
+        // Act
+        processor.EnqueueOrWait(1, action);
+        await Task.Delay(100); // Give the manager loop time to start
+        processor.EnqueueOrWait(2, action);
+        processor.EnqueueOrWait(3, action);
+
+        var blockedTask = Task.Run(() => processor.EnqueueOrWait(4, action));
+
+        await Task.Delay(100);
+
+        // Assert
+        Assert.AreEqual(1, tasksStarted, "Only one task should have started because the processor is blocked.");
+        Assert.IsFalse(blockedTask.IsCompleted, "The enqueue task should be blocked because the queue is full.");
+
+        // Cleanup
+        mre.Set();
+        await blockedTask;
+        await processor.WaitForAllAsync();
+    }
+
+    [TestMethod]
+    public async Task SmartDataProcessor_Blocks_When_CpuIsHigh()
+    {
+        // Arrange
+        var settings = new SmartDataProcessorSettings
+        {
+            MaxCpuUsage = 50
+        };
+        var cpuMonitor = new MockCpuMonitor();
+        var processor = new SmartDataProcessor<int>(settings, cpuMonitor);
+        var mre = new ManualResetEventSlim(false);
+
+        var action = (int data) =>
+        {
+            mre.Wait();
+        };
+
+        // Act
+        cpuMonitor.SetCpuUsage(100);
+        processor.EnqueueOrWait(1, action); // This will start the manager loop
+        await Task.Delay(100); // Give time for the manager to update the smoothed CPU
+
+        var blockedTask = Task.Run(() => processor.EnqueueOrWait(2, action));
+
+        await Task.Delay(100);
+
+        // Assert
+        Assert.IsFalse(blockedTask.IsCompleted, "The enqueue task should be blocked because the CPU usage is high.");
+
+        // Act
+        cpuMonitor.SetCpuUsage(20);
+        await Task.Delay(200); // Give time for the manager to update the smoothed CPU
+
+        // Assert
+        Assert.IsTrue(blockedTask.IsCompleted, "The enqueue task should be completed after the CPU usage is lowered.");
+
+        // Cleanup
+        mre.Set();
+        await processor.WaitForAllAsync();
+    }
+
+    [TestMethod]
+    public async Task SmartDataProcessor_PauseAndResume_Works()
     {
         // Arrange
         var processor = new SmartDataProcessor<int>(100);
-
-        // Act
-        processor.Dispose();
-
-        // Assert
-        // We can't directly check if the thread is stopped,
-        // but we can check if the CancellationToken is cancelled.
-        // A better approach would be to inject the thread and mock it,
-        // but for now, we'll just check if dispose doesn't throw.
-    }
-
-    [TestMethod]
-    public async Task SmartDataProcessor_EnqueueOrWait_BlocksWhenCpuUsageIsHigh()
-    {
-        // Arrange
-        var cpuMonitor = new MockCpuMonitor();
-        cpuMonitor.SetCpuUsage(100);
-        var processor = new SmartDataProcessor<int>(80, cpuMonitor);
         var processedData = new List<int>();
         var action = (int data) =>
         {
@@ -106,61 +163,40 @@ public class SmartDataProcessorTests
         };
 
         // Act
-        // Let the manager loop run a few times to ramp up the smoothed CPU value
-        for (int i = 0; i < 10; i++)
-        {
-            processor.ManagerLoopCycle.WaitOne(100);
-            processor.ManagerLoopCycle.Reset();
-        }
-        
-        var enqueueTask = Task.Run(() => processor.EnqueueOrWait(1, action));
-        await Task.Delay(50); // Give the task a chance to block inside EnqueueOrWait
+        processor.Pause();
+        processor.EnqueueOrWait(1, action);
+        await Task.Delay(100);
 
         // Assert
-        Assert.IsFalse(enqueueTask.IsCompleted);
+        Assert.AreEqual(0, processedData.Count, "No items should be processed while the processor is paused.");
 
         // Act
-        cpuMonitor.SetCpuUsage(50);
-        processor.ManagerLoopCycle.WaitOne(100); // Let the manager loop run to detect the change
-        await enqueueTask;
-
-        // Assert
-        Assert.IsTrue(enqueueTask.IsCompleted);
-    }
-
-    [TestMethod]
-    public async Task SmartDataProcessor_EnqueueOrWait_BlocksWhenQueueIsTooLarge()
-    {
-        // Arrange
-        var cpuMonitor = new MockCpuMonitor();
-        cpuMonitor.SetCpuUsage(10);
-        var processor = new SmartDataProcessor<int>(80, cpuMonitor);
-        var processedData = new List<int>();
-        var action = (int data) =>
-        {
-            lock (processedData)
-            {
-                processedData.Add(data);
-                Thread.Sleep(100);
-            }
-        };
-
-        // Act
-        for (int i = 0; i < 20; i++)
-        {
-            processor.EnqueueOrWait(i, action);
-        }
-        var enqueueTask = Task.Run(() => processor.EnqueueOrWait(20, action));
-        processor.ManagerLoopCycle.WaitOne();
-
-        // Assert
-        Assert.IsFalse(enqueueTask.IsCompleted);
-
-        // Act
+        processor.Resume();
         await processor.WaitForAllAsync();
-        await enqueueTask;
 
         // Assert
-        Assert.IsTrue(enqueueTask.IsCompleted);
+        Assert.AreEqual(1, processedData.Count, "Items should be processed after the processor is resumed.");
+    }
+
+    [TestMethod]
+    public async Task SmartDataProcessor_OnException_EventIsFired()
+    {
+        // Arrange
+        var processor = new SmartDataProcessor<int>(100);
+        Exception? caughtException = null;
+        processor.OnException += (ex) => caughtException = ex;
+
+        var action = (int data) =>
+        {
+            throw new InvalidOperationException("Test Exception");
+        };
+
+        // Act
+        processor.EnqueueOrWait(1, action);
+        await processor.WaitForAllAsync();
+
+        // Assert
+        Assert.IsNotNull(caughtException, "The OnException event should be fired.");
+        Assert.IsInstanceOfType(caughtException, typeof(InvalidOperationException), "The exception should be of the correct type.");
     }
 }

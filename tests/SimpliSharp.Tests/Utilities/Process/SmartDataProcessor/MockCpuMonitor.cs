@@ -1,7 +1,6 @@
+namespace SimpliSharp.Tests.Utilities.Process.SmartDataProcessor;
 
 using SimpliSharp.Utilities.Process;
-
-namespace SimpliSharp.Tests.Utilities.Process.SmartDataProcessor;
 
 public class MockCpuMonitor : ICpuMonitor
 {
