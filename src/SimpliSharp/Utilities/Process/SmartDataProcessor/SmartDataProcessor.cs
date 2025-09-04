@@ -39,10 +39,9 @@ public class SmartDataProcessor<T> : IDisposable
     private readonly double _maxCpuUsage;
     private readonly ConcurrentQueue<(T Data, Action<T> Action)> _jobs = new();
     private readonly ConcurrentDictionary<Task, bool> _runningTasks = new();
-    private readonly Thread _managerThread;
     private readonly CancellationTokenSource _cts = new();
     private readonly ICpuMonitor _cpuMonitor;
-    internal readonly ManualResetEvent ManagerLoopCycle = new(false);
+    private readonly Task _managerTask;
 
     private double _smoothedCpu = 0;
     private int _targetConcurrency = 1;
@@ -50,29 +49,21 @@ public class SmartDataProcessor<T> : IDisposable
 
     public ProcessingMetrics Metrics { get; } = new();
 
+    /// <summary>
+    /// Creates a new SmartDataProcessor with the specified maximum CPU usage.
+    /// </summary>
+    /// <param name="maxCpuUsage"> The maximum CPU usage percentage (0-100) to target.</param>
     public SmartDataProcessor(double maxCpuUsage = 100)
     {
         _maxCpuUsage = Math.Max(maxCpuUsage - CpuHeadroomBuffer, CpuHeadroomBuffer);
 
-        if (OperatingSystem.IsWindows())
-        {
-            _cpuMonitor = new WindowsCpuMonitor();
-        }
-        else if (OperatingSystem.IsLinux())
-        {
-            _cpuMonitor = new LinuxCpuMonitor();
-        }
-        else if (OperatingSystem.IsMacOS())
-        {
-            _cpuMonitor = new MacCpuMonitor();
-        }
-        else
-        {
-            _cpuMonitor = new NullCpuMonitor();
-        }
+        // OS-specific monitor logic is unchanged...
+        if (OperatingSystem.IsWindows()) _cpuMonitor = new WindowsCpuMonitor();
+        else if (OperatingSystem.IsLinux()) _cpuMonitor = new LinuxCpuMonitor();
+        else if (OperatingSystem.IsMacOS()) _cpuMonitor = new MacCpuMonitor();
+        else _cpuMonitor = new NullCpuMonitor();
 
-        _managerThread = new Thread(ManagerLoop) { IsBackground = true };
-        _managerThread.Start();
+        _managerTask = Task.Run(ManagerLoopAsync);
     }
 
     internal SmartDataProcessor(double maxCpuUsage, ICpuMonitor cpuMonitor)
@@ -80,10 +71,15 @@ public class SmartDataProcessor<T> : IDisposable
         _maxCpuUsage = maxCpuUsage;
         _cpuMonitor = cpuMonitor;
 
-        _managerThread = new Thread(ManagerLoop) { IsBackground = true };
-        _managerThread.Start();
+        _managerTask = Task.Run(ManagerLoopAsync);
     }
 
+    /// <summary>
+    /// Enqueues a data item for processing. If the CPU is saturated or the queue is overloaded,
+    /// this method will block until it is safe to enqueue the item.
+    /// </summary>
+    /// <param name="data"></param>
+    /// <param name="action"></param>
     public void EnqueueOrWait(T data, Action<T> action)
     {
         while (true)
@@ -102,6 +98,10 @@ public class SmartDataProcessor<T> : IDisposable
         _jobs.Enqueue((data, action));
     }
 
+    /// <summary>
+    /// Waits for all currently queued and running jobs to complete.
+    /// </summary>
+    /// <returns></returns>
     public async Task WaitForAllAsync()
     {
         while (!_jobs.IsEmpty)
@@ -112,16 +112,33 @@ public class SmartDataProcessor<T> : IDisposable
         await Task.WhenAll(_runningTasks.Keys.ToArray());
     }
 
+    /// <summary>
+    /// Disposes the processor, stopping all management and worker tasks.
+    /// Note: This does not cancel running jobs; it only stops accepting new ones and waits
+    /// for current jobs to finish.
+    /// </summary>
     public void Dispose()
     {
         _cts.Cancel();
-        _managerThread.Join();
+
+        try
+        {
+            _managerTask.Wait();
+        }
+        catch (AggregateException ex) when (ex.InnerExceptions.All(e => e is TaskCanceledException))
+        {
+            // This is expected when the task is cancelled. We can ignore it.
+        }
+        finally
+        {
+            _cts.Dispose();
+        }
     }
 
     /// <summary>
     /// The main management loop that coordinates concurrency adjustments and task launching.
     /// </summary>
-    private void ManagerLoop()
+    private async Task ManagerLoopAsync()
     {
         while (!_cts.IsCancellationRequested)
         {
@@ -129,14 +146,17 @@ public class SmartDataProcessor<T> : IDisposable
             {
                 UpdateConcurrency();
                 LaunchWorkerTasks();
+
+                await Task.Delay(ManagerLoopIntervalMs, _cts.Token);
+            }
+            catch (TaskCanceledException)
+            {
+                break;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error in ManagerLoop: {ex.Message}");
+                Console.WriteLine($"Error in ManagerLoopAsync: {ex.Message}");
             }
-
-            ManagerLoopCycle.Set();
-            Thread.Sleep(ManagerLoopIntervalMs);
         }
     }
 
@@ -188,7 +208,6 @@ public class SmartDataProcessor<T> : IDisposable
         _lastAverageDuration = Metrics.AvgTaskTime;
     }
 
-
     /// <summary>
     /// Launches new tasks from the queue to meet the target concurrency level.
     /// </summary>
@@ -222,6 +241,7 @@ public class SmartDataProcessor<T> : IDisposable
                         Metrics.AddJobDuration(sw.Elapsed.TotalMilliseconds);
                     }
                 });
+
                 _runningTasks.TryAdd(task, true);
             }
             else
