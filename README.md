@@ -22,18 +22,48 @@
 
 The `SmartDataProcessor<T>` is designed to process a queue of items in parallel, while automatically adjusting the level of concurrency to stay within a specified CPU usage limit.
 
-Usage example:
+### Features
+- **Dynamic Concurrency**: Automatically adjusts the number of worker threads based on real-time CPU load.
+- **CPU Throttling**: Ensures that CPU usage does not exceed a configurable maximum limit.
+- **Backpressure**: The `EnqueueOrWait` method blocks when the queue is full or the CPU is saturated, preventing memory overload.
+- **Lazy Initialization**: The processing thread pool is only created when the first item is enqueued.
+- **Configurable**: Fine-tune performance with the `SmartDataProcessorSettings` class.
+- **Event-driven**: Subscribe to events for CPU usage changes and exceptions.
+- **Runtime Control**: Pause and resume the processor on the fly.
+
+### Usage Example
+
+You can now configure the processor using the `SmartDataProcessorSettings` class:
 
 ```csharp
-using var processor = new SmartDataProcessor<int>(maxCpuUsage: 75);
-
-for (...)
+var settings = new SmartDataProcessorSettings
 {
-    processor.EnqueueOrWait(dtIn, data =>
+    MaxCpuUsage = 80, // Target 80% CPU usage
+    MaxDegreeOfParallelism = 4, // Use a maximum of 4 threads
+    QueueBufferMultiplier = 8 // Set a larger queue buffer
+};
+
+using var processor = new SmartDataProcessor<int>(settings);
+
+// Subscribe to events
+processor.OnCpuUsageChange += (cpuLoad) => Console.WriteLine($"CPU Load: {cpuLoad:F1}%");
+processor.OnException += (ex) => Console.WriteLine($"An error occurred: {ex.Message}");
+
+// Enqueue items
+for (int i = 0; i < 100; i++)
+{
+    processor.EnqueueOrWait(i, data =>
     {
-        ...
+        // Your processing logic here...
     });
 }
+
+// Pause and resume processing
+processor.Pause();
+Thread.Sleep(5000);
+processor.Resume();
+
+processor.WaitForAllAsync().Wait();
 ```
 
 ![Alt text for your image](https://raw.githubusercontent.com/cretucosmin3/SimpliSharp/refs/heads/main/assets/75-cpu-usage.png)

@@ -1,7 +1,10 @@
+
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace SimpliSharp.Utilities.Process;
 
@@ -29,50 +32,81 @@ public class SmartDataProcessor<T> : IDisposable
     /// </summary>
     private const double SmoothingFactor = 0.3;
 
-    /// <summary>
-    /// A multiplier to determine the queue size limit based on the current number of workers.
-    /// This creates back-pressure to prevent the queue from growing too quickly.
-    /// </summary>
-    private const int QueueBufferMultiplier = 2;
-
     // --- State ---
+    private readonly SmartDataProcessorSettings _settings;
     private readonly double _maxCpuUsage;
     private readonly ConcurrentQueue<(T Data, Action<T> Action)> _jobs = new();
     private readonly ConcurrentDictionary<Task, bool> _runningTasks = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly ICpuMonitor _cpuMonitor;
-    private readonly Task _managerTask;
+    private object _managerLock = new();
 
+    private Task _managerTask;
     private double _smoothedCpu = 0;
     private int _targetConcurrency = 1;
     private double _lastAverageDuration;
 
     public ProcessingMetrics Metrics { get; } = new();
+    public bool IsPaused { get; private set; }
+
+    // --- Events ---
+    public event Action<Exception> OnException;
+    public event Action<double> OnCpuUsageChange;
+
+    /// <summary>
+    /// Creates a new SmartDataProcessor with default settings.
+    /// </summary>
+    public SmartDataProcessor() : this(new SmartDataProcessorSettings())
+    {
+    }
 
     /// <summary>
     /// Creates a new SmartDataProcessor with the specified maximum CPU usage.
     /// </summary>
     /// <param name="maxCpuUsage"> The maximum CPU usage percentage (0-100) to target.</param>
-    public SmartDataProcessor(double maxCpuUsage = 100)
+    public SmartDataProcessor(double maxCpuUsage) : this(new SmartDataProcessorSettings { MaxCpuUsage = maxCpuUsage })
     {
-        _maxCpuUsage = Math.Max(maxCpuUsage - CpuHeadroomBuffer, CpuHeadroomBuffer);
+    }
+    
+    /// <summary>
+    /// Creates a new SmartDataProcessor with the specified settings.
+    /// </summary>
+    /// <param name="settings">The settings to use for this processor.</param>
+    public SmartDataProcessor(SmartDataProcessorSettings settings)
+    {
+        _settings = settings;
+        _maxCpuUsage = Math.Max(_settings.MaxCpuUsage - CpuHeadroomBuffer, CpuHeadroomBuffer);
 
-        // OS-specific monitor logic is unchanged...
-        if (OperatingSystem.IsWindows()) _cpuMonitor = new WindowsCpuMonitor();
-        else if (OperatingSystem.IsLinux()) _cpuMonitor = new LinuxCpuMonitor();
-        else if (OperatingSystem.IsMacOS()) _cpuMonitor = new MacCpuMonitor();
-        else _cpuMonitor = new NullCpuMonitor();
-
-        _managerTask = Task.Run(ManagerLoopAsync);
+        bool useCpuMonitoring = _settings.MaxCpuUsage < 100;
+        if (useCpuMonitoring)
+        {
+            if (OperatingSystem.IsWindows()) _cpuMonitor = new WindowsCpuMonitor();
+            else if (OperatingSystem.IsLinux()) _cpuMonitor = new LinuxCpuMonitor();
+            else if (OperatingSystem.IsMacOS()) _cpuMonitor = new MacCpuMonitor();
+            else _cpuMonitor = new NullCpuMonitor();
+        }
+        else
+        {
+            _cpuMonitor = new NullCpuMonitor();
+        }
     }
 
-    internal SmartDataProcessor(double maxCpuUsage, ICpuMonitor cpuMonitor)
+    internal SmartDataProcessor(SmartDataProcessorSettings settings, ICpuMonitor cpuMonitor)
     {
-        _maxCpuUsage = maxCpuUsage;
+        _settings = settings;
+        _maxCpuUsage = Math.Max(_settings.MaxCpuUsage - CpuHeadroomBuffer, CpuHeadroomBuffer);
         _cpuMonitor = cpuMonitor;
-
-        _managerTask = Task.Run(ManagerLoopAsync);
     }
+
+    /// <summary>
+    /// Pauses the processing of new items.
+    /// </summary>
+    public void Pause() => IsPaused = true;
+
+    /// <summary>
+    /// Resumes the processing of new items.
+    /// </summary>
+    public void Resume() => IsPaused = false;
 
     /// <summary>
     /// Enqueues a data item for processing. If the CPU is saturated or the queue is overloaded,
@@ -82,10 +116,12 @@ public class SmartDataProcessor<T> : IDisposable
     /// <param name="action"></param>
     public void EnqueueOrWait(T data, Action<T> action)
     {
+        LazyInitializer.EnsureInitialized(ref _managerTask, ref _managerLock, () => Task.Run(ManagerLoopAsync));
+
         while (true)
         {
             bool isCpuSaturated = _smoothedCpu > _maxCpuUsage && _cpuMonitor is not NullCpuMonitor;
-            bool isQueueOverloaded = _jobs.Count > _targetConcurrency * QueueBufferMultiplier;
+            bool isQueueOverloaded = _jobs.Count > _targetConcurrency * _settings.QueueBufferMultiplier;
 
             if (!isCpuSaturated && !isQueueOverloaded)
             {
@@ -109,7 +145,10 @@ public class SmartDataProcessor<T> : IDisposable
             await Task.Delay(50);
         }
 
-        await Task.WhenAll(_runningTasks.Keys.ToArray());
+        if (_managerTask != null)
+        {
+            await Task.WhenAll(_runningTasks.Keys.ToArray());
+        }
     }
 
     /// <summary>
@@ -123,7 +162,7 @@ public class SmartDataProcessor<T> : IDisposable
 
         try
         {
-            _managerTask.Wait();
+            _managerTask?.Wait();
         }
         catch (AggregateException ex) when (ex.InnerExceptions.All(e => e is TaskCanceledException))
         {
@@ -144,8 +183,11 @@ public class SmartDataProcessor<T> : IDisposable
         {
             try
             {
-                UpdateConcurrency();
-                LaunchWorkerTasks();
+                if (!IsPaused)
+                {
+                    UpdateConcurrency();
+                    LaunchWorkerTasks();
+                }
 
                 await Task.Delay(ManagerLoopIntervalMs, _cts.Token);
             }
@@ -155,7 +197,7 @@ public class SmartDataProcessor<T> : IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error in ManagerLoopAsync: {ex.Message}");
+                OnException?.Invoke(ex);
             }
         }
     }
@@ -168,6 +210,16 @@ public class SmartDataProcessor<T> : IDisposable
         double cpuUsage = _cpuMonitor.GetCpuUsage();
         _smoothedCpu = (SmoothingFactor * cpuUsage) + (1 - SmoothingFactor) * _smoothedCpu;
         Metrics.UpdateSmoothedCpu(_smoothedCpu);
+        OnCpuUsageChange?.Invoke(_smoothedCpu);
+
+        int maxConcurrency = _settings.MaxDegreeOfParallelism ?? Environment.ProcessorCount;
+
+        // If CPU monitoring is disabled, just max out the concurrency.
+        if (_cpuMonitor is NullCpuMonitor)
+        {
+            _targetConcurrency = maxConcurrency;
+            return;
+        }
 
         // --- Concurrency Decrease Logic ---
         bool isCpuAboveMax = _smoothedCpu > _maxCpuUsage;
@@ -182,10 +234,9 @@ public class SmartDataProcessor<T> : IDisposable
 
         // --- Concurrency Increase Logic ---
         bool hasCpuHeadroom = _smoothedCpu < _maxCpuUsage - CpuHeadroomBuffer;
-        bool isMonitorDisabled = _cpuMonitor is NullCpuMonitor;
-        bool canIncreaseConcurrency = _targetConcurrency < Environment.ProcessorCount;
+        bool canIncreaseConcurrency = _targetConcurrency < maxConcurrency;
 
-        if ((hasCpuHeadroom || isMonitorDisabled) && canIncreaseConcurrency)
+        if (hasCpuHeadroom && canIncreaseConcurrency)
         {
             // Check if adding threads is causing performance to degrade (contention).
             bool isJobDurationIncreasing = Metrics.AvgTaskTime > _lastAverageDuration;
@@ -201,7 +252,7 @@ public class SmartDataProcessor<T> : IDisposable
                 // If jobs are very short, we can be more aggressive in scaling up.
                 bool areJobsShort = Metrics.AvgTaskTime > 0 && Metrics.AvgTaskTime < ShortJobThresholdMs;
                 int increaseAmount = areJobsShort ? 2 : 1;
-                _targetConcurrency = Math.Min(_targetConcurrency + increaseAmount, Environment.ProcessorCount);
+                _targetConcurrency = Math.Min(_targetConcurrency + increaseAmount, maxConcurrency);
             }
         }
 
@@ -234,6 +285,10 @@ public class SmartDataProcessor<T> : IDisposable
                     try
                     {
                         job.Action(job.Data);
+                    }
+                    catch (Exception ex)
+                    {
+                        OnException?.Invoke(ex);
                     }
                     finally
                     {

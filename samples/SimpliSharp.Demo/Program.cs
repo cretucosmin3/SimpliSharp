@@ -32,14 +32,24 @@ switch (choice.Key)
         return;
 }
 
+Console.WriteLine();
+Console.WriteLine("Press any key to exit...");
+Console.ReadKey();
+
 static void SmartDataProcessor_Example()
 {
     Console.Clear();
     Console.WriteLine("Starting data processing...");
 
-    using var processor = new SmartDataProcessor<int>(maxCpuUsage: 90);
+    var settings = new SmartDataProcessorSettings
+    {
+        MaxDegreeOfParallelism = 1
+    };
+
+    using var processor = new SmartDataProcessor<int>(settings);
+
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-    var tasksCount = 2000;
+    var tasksCount = 200;
 
     for (int i = 0; i < tasksCount; i++)
     {
@@ -50,7 +60,7 @@ static void SmartDataProcessor_Example()
             int simMax = Random.Shared.Next(5_000_000, 20_000_000);
             double sum = 0;
 
-            for (int j = 0; j < 10_000_000; j++)
+            for (int j = 0; j < simMax; j++)
             {
                 double value = Math.Sqrt(j) * Math.Sin(j % 360) + Math.Log(j + 1);
                 if (value > 1000)
