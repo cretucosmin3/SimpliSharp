@@ -1,4 +1,5 @@
-﻿using SimpliSharp.Extensions.Batch;
+﻿using System.Threading.Tasks.Dataflow;
+using SimpliSharp.Extensions.Batch;
 using SimpliSharp.Utilities.Process;
 
 Console.WriteLine("SimpliSharp Demo Application");
@@ -6,8 +7,9 @@ Console.WriteLine("---------------------------");
 
 Console.WriteLine("Available Demos:");
 Console.WriteLine("1. SmartDataProcessor Example");
-Console.WriteLine("2. Enumerable.Batch");
-Console.WriteLine("3. Enumerable.BatchSliding");
+Console.WriteLine("2. ActionBlock Example (from TPL Dataflow)");
+Console.WriteLine("3. Enumerable.Batch");
+Console.WriteLine("4. Enumerable.BatchSliding");
 
 Console.WriteLine("[Enter] to exit");
 
@@ -17,14 +19,18 @@ switch (choice.Key)
 {
     case ConsoleKey.D1:
     case ConsoleKey.NumPad1:
-        SmartDataProcessor_Example();
+        SmartDataProcessor_Example().Wait();
         break;
     case ConsoleKey.D2:
     case ConsoleKey.NumPad2:
-        EnumerableBatch_Example();
+        ActionBlock_Example().Wait();
         break;
     case ConsoleKey.D3:
     case ConsoleKey.NumPad3:
+        EnumerableBatch_Example();
+        break;
+    case ConsoleKey.D4:
+    case ConsoleKey.NumPad4:
         EnumerableBatchSliding_Example();
         break;
     default:
@@ -36,31 +42,29 @@ Console.WriteLine();
 Console.WriteLine("Press any key to exit...");
 Console.ReadKey();
 
-static void SmartDataProcessor_Example()
+static async Task SmartDataProcessor_Example()
 {
-    Console.Clear();
     Console.WriteLine("Starting data processing...");
 
     var settings = new SmartDataProcessorSettings
     {
-        MaxDegreeOfParallelism = 1
+        MaxCpuUsage = 95
     };
 
     using var processor = new SmartDataProcessor<int>(settings);
 
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-    var tasksCount = 200;
+    var tasksCount = 1000;
 
     for (int i = 0; i < tasksCount; i++)
     {
         int line = i;
 
-        processor.EnqueueOrWait(line, data =>
+        await processor.EnqueueOrWaitAsync(line, data =>
         {
-            int simMax = Random.Shared.Next(5_000_000, 20_000_000);
             double sum = 0;
 
-            for (int j = 0; j < simMax; j++)
+            for (int j = 0; j < 10_000_000; j++)
             {
                 double value = Math.Sqrt(j) * Math.Sin(j % 360) + Math.Log(j + 1);
                 if (value > 1000)
@@ -91,13 +95,56 @@ static void SmartDataProcessor_Example()
     Console.WriteLine("All processing done");
 }
 
+static async Task ActionBlock_Example()
+{
+    Console.WriteLine("Starting data processing with ActionBlock...");
+
+    var tasksCount = 1000;
+    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+    Action<int> processAction = data =>
+    {
+        double sum = 0;
+        for (int j = 0; j < 10_000_000; j++)
+        {
+            double value = Math.Sqrt(j) * Math.Sin(j % 360) + Math.Log(j + 1);
+            if (value > 1000)
+                sum -= value / 3.0;
+            else
+                sum += value * 2.5;
+        }
+    };
+
+    var executionOptions = new ExecutionDataflowBlockOptions
+    {
+        MaxDegreeOfParallelism = Environment.ProcessorCount
+    };
+
+    var actionBlock = new ActionBlock<int>(processAction, executionOptions);
+
+    for (int i = 0; i < tasksCount; i++)
+    {
+        await actionBlock.SendAsync(i);
+
+        Console.SetCursorPosition(0, Console.CursorTop);
+        Console.Write($"Posting item {i + 1} of {tasksCount}");
+    }
+
+    Console.WriteLine("\nAll items have been posted. Waiting for processing to complete...");
+
+    actionBlock.Complete();
+
+    await actionBlock.Completion;
+
+    stopwatch.Stop();
+
+    Console.WriteLine($"\nProcessing completed in {stopwatch.Elapsed.TotalSeconds:F2} seconds");
+    Console.WriteLine("All processing done.");
+}
+
 static void EnumerableBatch_Example()
 {
-    Console.Clear();
     Console.WriteLine("Starting Enumerable.Batch demo...");
-
-    // yields: [ ["Red", "Blue"], ["Purple", "Black"], ["Yellow", "Pink"] ]
-
 
     string[] sample = ["Red", "Blue", "Purple", "Black", "Yellow", "Pink"];
     int batchSize = 3;
@@ -117,7 +164,6 @@ static void EnumerableBatch_Example()
 
 static void EnumerableBatchSliding_Example()
 {
-    Console.Clear();
     Console.WriteLine("Starting Enumerable.BatchSliding demo...");
 
     var numbers = Enumerable.Range(1, 3);

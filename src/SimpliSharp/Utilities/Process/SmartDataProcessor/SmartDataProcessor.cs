@@ -20,7 +20,7 @@ public class SmartDataProcessor<T> : IDisposable
     /// <summary>
     /// A buffer to keep CPU usage below the absolute maximum, allowing for scaling.
     /// </summary>
-    private const double CpuHeadroomBuffer = 5;
+    private const double CpuHeadroomBuffer = 2;
 
     /// <summary>
     /// Threshold in milliseconds to consider a job "short" for faster concurrency scaling.
@@ -41,7 +41,7 @@ public class SmartDataProcessor<T> : IDisposable
     private readonly ICpuMonitor _cpuMonitor;
     private object _managerLock = new();
 
-    private Task _managerTask;
+    private Task? _managerTask;
     private double _smoothedCpu = 0;
     private int _targetConcurrency = 1;
     private double _lastAverageDuration;
@@ -110,11 +110,11 @@ public class SmartDataProcessor<T> : IDisposable
 
     /// <summary>
     /// Enqueues a data item for processing. If the CPU is saturated or the queue is overloaded,
-    /// this method will block until it is safe to enqueue the item.
+    /// this method will wait until it is safe to enqueue the item.
     /// </summary>
-    /// <param name="data"></param>
-    /// <param name="action"></param>
-    public void EnqueueOrWait(T data, Action<T> action)
+    /// <param name="data">Data to be processed</param>
+    /// <param name="action">Action to process the data with</param>
+    public async Task EnqueueOrWaitAsync(T data, Action<T> action)
     {
         LazyInitializer.EnsureInitialized(ref _managerTask, ref _managerLock, () => Task.Run(ManagerLoopAsync));
 
@@ -128,7 +128,7 @@ public class SmartDataProcessor<T> : IDisposable
                 break;
             }
 
-            Thread.Sleep(10);
+            await Task.Delay(5);
         }
 
         _jobs.Enqueue((data, action));

@@ -52,7 +52,7 @@ processor.OnException += (ex) => Console.WriteLine($"An error occurred: {ex.Mess
 // Enqueue items
 for (int i = 0; i < 100; i++)
 {
-    processor.EnqueueOrWait(i, data =>
+    processor.EnqueueOrWaitAsync(i, data =>
     {
         // Your processing logic here...
     });
