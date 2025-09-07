@@ -22,7 +22,7 @@ public class SmartDataProcessorTests
         // Act
         for (int i = 0; i < 10; i++)
         {
-            processor.EnqueueOrWait(i, action);
+            processor.EnqueueOrWaitAsync(i, action).Wait();
         }
         await processor.WaitForAllAsync();
 
@@ -55,7 +55,7 @@ public class SmartDataProcessorTests
         // Act
         for (int i = 0; i < 5; i++)
         {
-            processor.EnqueueOrWait(i, action);
+            processor.EnqueueOrWaitAsync(i, action).Wait();
         }
 
         await Task.Delay(100); // Give time for tasks to start
@@ -88,12 +88,12 @@ public class SmartDataProcessorTests
         };
 
         // Act
-        processor.EnqueueOrWait(1, action);
+        processor.EnqueueOrWaitAsync(1, action).Wait();
         await Task.Delay(100); // Give the manager loop time to start
-        processor.EnqueueOrWait(2, action);
-        processor.EnqueueOrWait(3, action);
+        processor.EnqueueOrWaitAsync(2, action).Wait();
+        processor.EnqueueOrWaitAsync(3, action).Wait();
 
-        var blockedTask = Task.Run(() => processor.EnqueueOrWait(4, action));
+        var blockedTask = Task.Run(async () => await processor.EnqueueOrWaitAsync(4, action));
 
         await Task.Delay(100);
 
@@ -126,10 +126,10 @@ public class SmartDataProcessorTests
 
         // Act
         cpuMonitor.SetCpuUsage(100);
-        processor.EnqueueOrWait(1, action); // This will start the manager loop
+        processor.EnqueueOrWaitAsync(1, action).Wait(); // This will start the manager loop
         await Task.Delay(100); // Give time for the manager to update the smoothed CPU
 
-        var blockedTask = Task.Run(() => processor.EnqueueOrWait(2, action));
+        var blockedTask = Task.Run(async () => await processor.EnqueueOrWaitAsync(2, action));
 
         await Task.Delay(100);
 
@@ -164,7 +164,7 @@ public class SmartDataProcessorTests
 
         // Act
         processor.Pause();
-        processor.EnqueueOrWait(1, action);
+        await processor.EnqueueOrWaitAsync(1, action);
         await Task.Delay(100);
 
         // Assert
@@ -192,7 +192,7 @@ public class SmartDataProcessorTests
         };
 
         // Act
-        processor.EnqueueOrWait(1, action);
+        processor.EnqueueOrWaitAsync(1, action).Wait();
         await processor.WaitForAllAsync();
 
         // Assert
