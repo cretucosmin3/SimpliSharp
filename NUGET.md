@@ -1,6 +1,5 @@
-![SimpliSharp](https://github.com/cretucosmin3/SimpliSharp/blob/main/assets/simpli-sharp-dark.png?raw=true)
-
-**SimpliSharp is a C# utility library designed to streamline development with useful extensions, helpers, data processing tools, and logging helpers.**
+## SimpliSharp
+**A utility library designed to streamline development with useful extensions, helpers, data processing tools, and logging helpers.**
 
 [![.NET](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/cretucosmin3/SimpliSharp/actions/workflows/dotnet.yml)[![GitHub last commit](https://img.shields.io/github/last-commit/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/commits/main)
 [![GitHub stars](https://img.shields.io/github/stars/cretucosmin3/SimpliSharp.svg)](https://github.com/cretucosmin3/SimpliSharp/stargazers)
@@ -40,7 +39,7 @@ processor.OnException += (ex) => Console.WriteLine($"An error occurred: {ex.Mess
 // Enqueue items
 for (int i = 0; i < 100; i++)
 {
-    processor.EnqueueOrWait(i, data =>
+    processor.EnqueueOrWaitAsync(i, data =>
     {
         // Your processing logic here...
     });
