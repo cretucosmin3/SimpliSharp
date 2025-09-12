@@ -112,6 +112,7 @@ public static class CallTracer
 
     private static void BuildTraceString(MethodCall call, StringBuilder sb, int depth, Exception? breakingException)
     {
+        // --- Method entry and indentation (same as before) ---
         if (depth == 0)
         {
             sb.AppendLine();
@@ -132,37 +133,48 @@ public static class CallTracer
             sb.Append($" ({duration:F2}ms)");
         }
 
-        // Only show exceptions for leaf nodes (methods that threw the exception)
         if (call.Exception != null)
         {
-            bool isBreakingException = call.Exception == breakingException;
+            // Check if any child call recorded the exact same exception instance.
+            bool thrownByChild = call.Children.Any(c => c.Exception == call.Exception);
 
-            if (UseEmojis)
+            if (thrownByChild)
             {
-                if (isBreakingException)
-                    sb.Append(" ❌");
-                else
-                    sb.Append(" ⭕");
-            }
+                // This method caught an exception from a child call.
+                if (UseEmojis)
+                    sb.Append(" ⚠️");
 
-            if (call.Exception is AggregateException aggEx && aggEx.InnerExceptions.Count > 1)
-            {
-                sb.Append(" Multiple thrown exceptions:");
-
-                foreach (var error in aggEx.InnerExceptions)
-                {
-                    sb.AppendLine();
-                    sb.Append(new string(' ', (depth + 2) * 2));
-
-                    if (UseEmojis)
-                        sb.Append("⚠️ ");
-
-                    sb.Append($" {GetErrorLineNumber(error)} - {error.GetType().Name}: {error.Message}");
-                }
+                sb.Append(" - Inner call failed");
             }
             else
             {
-                sb.Append($" {GetErrorLineNumber(call.Exception)} - {call.Exception.GetType().Name}: {call.Exception.Message}");
+                // This is the source of the exception within this branch.
+                bool isBreakingException = call.Exception == breakingException;
+
+                if (UseEmojis)
+                {
+                    if (isBreakingException)
+                        sb.Append(" ❌"); // The exception that stopped the whole trace.
+                    else
+                        sb.Append(" ⭕"); // A handled/caught exception.
+                }
+
+                if (call.Exception is AggregateException aggEx && aggEx.InnerExceptions.Count > 1)
+                {
+                    sb.Append(" Multiple thrown exceptions:");
+                    foreach (var error in aggEx.InnerExceptions)
+                    {
+                        sb.AppendLine();
+                        sb.Append(new string(' ', (depth + 2) * 2));
+                        if (UseEmojis)
+                            sb.Append("⚠️");
+                        sb.Append($" {GetErrorLineNumber(error)} - {error.GetType().Name}: {error.Message}");
+                    }
+                }
+                else
+                {
+                    sb.Append($" {GetErrorLineNumber(call.Exception)} - {call.Exception.GetType().Name}: {call.Exception.Message}");
+                }
             }
         }
         else if (call.Result != null)
