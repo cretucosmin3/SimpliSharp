@@ -225,6 +225,8 @@ public static class CallTracer
 
     internal static MethodTracer TraceMethod(string methodName)
     {
+        var stopwatch = Stopwatch.StartNew();
+
         bool isFirstCall = CurrentContext.RequestId == null;
         if (isFirstCall)
         {
@@ -261,11 +263,16 @@ public static class CallTracer
         // Set this as the current method
         CurrentContext.CurrentMethodId = methodCall.Id;
 
-        return new MethodTracer(
+        var tracer = new MethodTracer(
             methodCall.Id,
             parentId,
             CurrentContext.RequestId,
             () => RestoreContext(parentId));
+
+        stopwatch.Stop();
+        TracerProfiler.Add(stopwatch.Elapsed);
+
+        return tracer;
     }
 
     internal class MethodTracer : IDisposable
@@ -306,8 +313,10 @@ public static class CallTracer
             }
         }
 
+
         public void SetResult(string? result)
         {
+            var stopwatch = Stopwatch.StartNew();
             RestoreMethodContext(() =>
             {
                 if (ActiveCalls.TryGetValue(_methodId, out var call))
@@ -315,10 +324,13 @@ public static class CallTracer
                     call.Complete(result);
                 }
             });
+            stopwatch.Stop();
+            TracerProfiler.Add(stopwatch.Elapsed);
         }
 
         public void SetException(Exception ex)
         {
+            var stopwatch = Stopwatch.StartNew();
             RestoreMethodContext(() =>
             {
                 if (ActiveCalls.TryGetValue(_methodId, out var call))
@@ -326,6 +338,8 @@ public static class CallTracer
                     call.Complete(exception: ex);
                 }
             });
+            stopwatch.Stop();
+            TracerProfiler.Add(stopwatch.Elapsed);
         }
 
         public void Dispose()
@@ -333,6 +347,8 @@ public static class CallTracer
             lock (_lock)
             {
                 if (_disposed) return;
+
+                var stopwatch = Stopwatch.StartNew();
 
                 Context.Value = new AsyncContext
                 {
@@ -350,6 +366,9 @@ public static class CallTracer
 
                 _onDispose();
                 _disposed = true;
+
+                stopwatch.Stop();
+                TracerProfiler.Add(stopwatch.Elapsed);
             }
         }
     }

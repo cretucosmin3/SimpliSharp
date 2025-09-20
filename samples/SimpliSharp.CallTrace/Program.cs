@@ -1,4 +1,5 @@
-﻿using SimpliSharp.Utilities.Logging;
+﻿using SimpliSharp.Demos;
+using SimpliSharp.Utilities.Logging;
 using System.Diagnostics;
 using System.Net.Mail;
 
@@ -17,6 +18,37 @@ static class Program
     [CallTrace]
     static async Task Main()
     {
+        await PerformHappyPathDemo();
+        // await PerformErrorPathDemo();
+        // await PerformErrorPathDemo();
+    }
+
+    [CallTrace]
+    private static async Task PerformHappyPathDemo()
+    {
+        TracerProfiler.Reset();
+        var timer = Stopwatch.StartNew();
+
+        var demo = new HappyPathDemo();
+        await demo.RunAsync();
+
+        timer.Stop();
+        Console.WriteLine($"Execution took {timer.ElapsedMilliseconds} ms");
+        Console.WriteLine("\n--- Happy Path Trace ---");
+
+        var getTraceTimer = Stopwatch.StartNew();
+        string traceOutput = CallTracer.GetTrace();
+        getTraceTimer.Stop();
+
+        Console.WriteLine(traceOutput);
+        Console.WriteLine($"--- GetTrace() took {getTraceTimer.Elapsed.TotalMilliseconds:F2}ms to execute. ---");
+        Console.WriteLine($"--- Total tracing overhead: {TracerProfiler.TotalOverhead.TotalMilliseconds:F2}ms ---");
+    }
+
+    [CallTrace]
+    private static async Task PerformErrorPathDemo()
+    {
+        TracerProfiler.Reset();
         Stopwatch timer = Stopwatch.StartNew();
 
         var processor = new OrderProcessor();
@@ -43,6 +75,7 @@ static class Program
             await System.IO.File.WriteAllTextAsync("trace.log", traceOutput);
             Console.WriteLine(traceOutput);
             Console.WriteLine($"--- GetTrace() took {getTraceTimer.Elapsed.TotalMilliseconds:F2}ms to execute. ---");
+            Console.WriteLine($"--- Total tracing overhead: {TracerProfiler.TotalOverhead.TotalMilliseconds:F2}ms ---");
         }
     }
 }
