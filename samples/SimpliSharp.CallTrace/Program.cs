@@ -1,10 +1,10 @@
 ﻿using SimpliSharp.Utilities.Logging;
+using System.Diagnostics;
 using System.Net.Mail;
 
-// --- Custom Exceptions for Clarity ---
 public class OutOfStockException : Exception
 {
-    public OutOfStockException(int productId) : base($"Product '{productId}' is out of stock.") { }
+    public OutOfStockException(string message) : base(message) { }
 }
 
 public class PaymentGatewayException : Exception
@@ -15,28 +15,30 @@ public class PaymentGatewayException : Exception
 static class Program
 {
     [CallTrace]
-    static void Main()
+    static async Task Main()
     {
+        Stopwatch timer = Stopwatch.StartNew();
+
         var processor = new OrderProcessor();
-        
         try
         {
             // We'll process three orders in parallel to test concurrency.
-            // - Order 101: Will succeed.
-            // - Order 202: Will have a handled failure (notification fails).
-            // - Order 303: Will have a breaking failure (out of stock).
-            processor.ProcessOrdersAsync(new List<int> { 101, 202, 303 }).Wait();
+            // - Order 101: Will have a repeating call sequence where one fails.
+            // - Order 901: Will succeed.
+            // - Order 202: Will have a handled notification failure.
+            // - Order 902: Will succeed.
+            // - Order 303: Will have a breaking failure (payment fails).
+            await processor.ProcessOrdersAsync(new List<int> { 101, 901, 202, 902, 303 });
         }
         catch (Exception breakingException)
         {
+            timer.Stop();
+            Console.WriteLine($"Execution took {timer.ElapsedMilliseconds} ms");
             Console.WriteLine("--- A critical error occurred. Generating trace log. ---");
-            // GetTrace will capture the entire call tree for the request ID.
             string traceOutput = CallTracer.GetTrace(breakingException);
             
-            File.WriteAllText("trace.log", traceOutput);
+            await System.IO.File.WriteAllTextAsync("trace.log", traceOutput);
             Console.WriteLine(traceOutput);
-            // In a real app, you might write this to a file or send to a logging service.
-            // File.WriteAllText("trace.log", traceOutput);
         }
     }
 }
@@ -50,9 +52,6 @@ public class OrderProcessor
     public async Task ProcessOrdersAsync(List<int> orderIds)
     {
         var processingTasks = orderIds.Select(ProcessSingleOrderAsync).ToList();
-        
-        // Task.WhenAll runs all tasks concurrently. If any task throws an
-        // unhandled exception, it will be wrapped in an AggregateException.
         await Task.WhenAll(processingTasks);
     }
     
@@ -60,32 +59,51 @@ public class OrderProcessor
     private async Task ProcessSingleOrderAsync(int orderId)
     {
         Console.WriteLine($"Processing order {orderId}...");
-        await _inventory.CheckStockAsync(orderId);
+        Exception? capturedException = null;
+
+        if (orderId == 101)
+        {
+            // This block demonstrates a repeating call where one fails.
+            for (int i = 0; i < 6; i++)
+            {
+                try
+                {
+                    await _inventory.CheckStockAsync(orderId, i + 1);
+                }
+                catch (Exception ex)
+                {
+                    capturedException = ex;
+                }
+            }
+        }
+        else
+        {
+            await _inventory.CheckStockAsync(orderId, 1);
+        }
+
         await ChargeCustomer(orderId);
 
         try
         {
-            // This call might fail, but we'll handle it gracefully.
             await _notification.SendConfirmationEmailAsync(orderId);
         }
         catch (SmtpException ex)
         {
-            // This is a handled exception. The trace should show it with a
-            // different icon (⭕) because it didn't stop the program flow.
             Console.WriteLine($"Warning: Failed to send email for order {orderId}. Details: {ex.Message}");
+        }
+
+        if (capturedException != null)
+        {
+            throw capturedException;
         }
     }
     
     [CallTrace]
     private async Task ChargeCustomer(int orderId)
     {
-        // Simulate a delay for a payment gateway call.
-        await Task.Delay(50);
-        
-        // This order is designed to fail at the payment step.
+        await Task.Delay(20);
         if (orderId == 303)
         {
-            // This is the breaking exception. The trace should mark this with ❌.
             throw new PaymentGatewayException("Credit card declined: Insufficient funds.");
         }
     }
@@ -94,24 +112,19 @@ public class OrderProcessor
 public class InventoryService
 {
     [CallTrace]
-    public async Task CheckStockAsync(int orderId)
+    public async Task CheckStockAsync(int orderId, int attemptNumber)
     {
-        await Task.Delay(20); // Simulate a database call.
+        await Task.Delay(10);
         
-        // To make it more complex, let's pretend order 303's product ID is 999
+        if (orderId == 101 && attemptNumber == 5) // 5th attempt fails
+        {
+            throw new OutOfStockException($"Failed to verify stock for order {orderId} on attempt {attemptNumber}.");
+        }
+
         if (orderId == 303)
         {
-            try
-            {
-                // This call will fail, but the exception will be caught and
-                // wrapped in a more specific exception type.
-                await CheckProductAvailability(999);
-            }
-            catch (Exception ex)
-            {
-                // Re-throwing as a more specific exception is a common pattern.
-                throw new OutOfStockException(999);
-            }
+            // Simulate a more complex failure for a different order
+            await CheckProductAvailability(999);
         }
     }
     
@@ -119,10 +132,7 @@ public class InventoryService
     private async Task CheckProductAvailability(int productId)
     {
         await Task.Delay(10);
-        if (productId == 999)
-        {
-            throw new InvalidOperationException("SKU lookup failed in warehouse DB.");
-        }
+        throw new InvalidOperationException("SKU lookup failed in warehouse DB.");
     }
 }
 
@@ -131,9 +141,7 @@ public class NotificationService
     [CallTrace]
     public async Task SendConfirmationEmailAsync(int orderId)
     {
-        await Task.Delay(30); // Simulate connecting to an email server.
-        
-        // This order is designed to have a handled notification failure.
+        await Task.Delay(15);
         if (orderId == 202)
         {
             throw new SmtpException("SMTP server connection timeout.");
