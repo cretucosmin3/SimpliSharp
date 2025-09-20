@@ -35,10 +35,14 @@ static class Program
             timer.Stop();
             Console.WriteLine($"Execution took {timer.ElapsedMilliseconds} ms");
             Console.WriteLine("--- A critical error occurred. Generating trace log. ---");
+
+            var getTraceTimer = Stopwatch.StartNew();
             string traceOutput = CallTracer.GetTrace(breakingException);
-            
+            getTraceTimer.Stop();
+
             await System.IO.File.WriteAllTextAsync("trace.log", traceOutput);
             Console.WriteLine(traceOutput);
+            Console.WriteLine($"--- GetTrace() took {getTraceTimer.Elapsed.TotalMilliseconds:F2}ms to execute. ---");
         }
     }
 }
