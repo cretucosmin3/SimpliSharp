@@ -112,19 +112,10 @@ public static class CallTracer
 
     private static void BuildTraceString(MethodCall call, StringBuilder sb, int depth, Exception? breakingException)
     {
-        // --- Method entry and indentation (same as before) ---
-        if (depth == 0)
-        {
-            sb.AppendLine();
-            sb.Append("- ");
-        }
-        else
-        {
-            sb.AppendLine();
-            sb.Append(new string(' ', depth * 2));
-            sb.Append("- ");
-        }
-
+        // --- Render the current call's line --- 
+        sb.AppendLine();
+        sb.Append(new string(' ', depth * 2));
+        sb.Append("- ");
         sb.Append(call.MethodName);
 
         if (call.EndTime.HasValue)
@@ -135,46 +126,20 @@ public static class CallTracer
 
         if (call.Exception != null)
         {
-            // Check if any child call recorded the exact same exception instance.
             bool thrownByChild = call.Children.Any(c => c.Exception == call.Exception);
-
             if (thrownByChild)
             {
-                // This method caught an exception from a child call.
-                if (UseEmojis)
-                    sb.Append(" ⚠️");
-
-                sb.Append(" - Inner call failed");
+                if (call.Exception == breakingException)
+                {
+                    if (UseEmojis) sb.Append(" ⚠️");
+                    sb.Append(" - Inner call failed");
+                }
             }
             else
             {
-                // This is the source of the exception within this branch.
                 bool isBreakingException = call.Exception == breakingException;
-
-                if (UseEmojis)
-                {
-                    if (isBreakingException)
-                        sb.Append(" ❌"); // The exception that stopped the whole trace.
-                    else
-                        sb.Append(" ⭕"); // A handled/caught exception.
-                }
-
-                if (call.Exception is AggregateException aggEx && aggEx.InnerExceptions.Count > 1)
-                {
-                    sb.Append(" Multiple thrown exceptions:");
-                    foreach (var error in aggEx.InnerExceptions)
-                    {
-                        sb.AppendLine();
-                        sb.Append(new string(' ', (depth + 2) * 2));
-                        if (UseEmojis)
-                            sb.Append("⚠️");
-                        sb.Append($" {GetErrorLineNumber(error)} - {error.GetType().Name}: {error.Message}");
-                    }
-                }
-                else
-                {
-                    sb.Append($" {GetErrorLineNumber(call.Exception)} - {call.Exception.GetType().Name}: {call.Exception.Message}");
-                }
+                if (UseEmojis) sb.Append(isBreakingException ? " ❌" : " ⭕");
+                sb.Append($" {GetErrorLineNumber(call.Exception)} - {call.Exception.GetType().Name}: {call.Exception.Message}");
             }
         }
         else if (call.Result != null)
@@ -186,15 +151,55 @@ public static class CallTracer
             sb.Append(" => void");
         }
 
+        // --- Process and render children ---
         List<MethodCall> children;
         lock (call.Children)
         {
-            children = call.Children.OrderBy(c => c.StartTime).ToList();
+            children = call.Children.ToList();
         }
 
-        foreach (var child in children)
+        if (children.Count == 0) return;
+
+        var groups = children
+            .GroupBy(c => c.GetStructuralHash())
+            .Select(g => g.ToList())
+            .OrderBy(g => g.First().StartTime)
+            .ToList();
+
+        foreach (var group in groups)
         {
-            BuildTraceString(child, sb, depth + 1, breakingException);
+            if (group.Count > 1)
+            {
+                var firstInGroup = group.First();
+                var totalDuration = group.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Sum();
+                sb.AppendLine();
+                sb.Append(new string(' ', (depth + 1) * 2));
+                sb.Append($"- [x{group.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms)");
+
+                // Since all are structurally identical, the result is the same
+                if (firstInGroup.Exception == null)
+                {
+                    sb.Append($" => {firstInGroup.Result ?? "void"}");
+                }
+                else
+                {
+                    // If the first one has an exception, the whole group does. Show the first one's exception.
+                    bool isBreaking = firstInGroup.Exception == breakingException;
+                    if (UseEmojis) sb.Append(isBreaking ? " ❌" : " ⭕");
+                    sb.Append($" {GetErrorLineNumber(firstInGroup.Exception)} - {firstInGroup.Exception.GetType().Name}: {firstInGroup.Exception.Message}");
+                }
+
+                // Render children of the first call as a representative example
+                foreach (var child in firstInGroup.Children.OrderBy(c => c.StartTime))
+                {
+                    BuildTraceString(child, sb, depth + 2, breakingException);
+                }
+            }
+            else
+            {
+                // Not a group, render the single call and its children recursively
+                BuildTraceString(group.First(), sb, depth + 1, breakingException);
+            }
         }
     }
 
