@@ -18,9 +18,8 @@ static class Program
     [CallTrace]
     static async Task Main()
     {
-        await PerformHappyPathDemo();
-        // await PerformErrorPathDemo();
-        // await PerformErrorPathDemo();
+        // await PerformHappyPathDemo();
+        await PerformErrorPathDemo();
     }
 
     [CallTrace]

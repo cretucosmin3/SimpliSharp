@@ -171,10 +171,11 @@ public static class CallTracer
             if (group.Count > 1)
             {
                 var firstInGroup = group.First();
-                var totalDuration = group.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Sum();
+                var totalDuration = group.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Average();
+
                 sb.AppendLine();
                 sb.Append(new string(' ', (depth + 1) * 2));
-                sb.Append($"- [x{group.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms)");
+                sb.Append($"- [x{group.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms avg)");
 
                 // Since all are structurally identical, the result is the same
                 if (firstInGroup.Exception == null)
@@ -321,7 +322,7 @@ public static class CallTracer
             {
                 if (ActiveCalls.TryGetValue(_methodId, out var call))
                 {
-                    call.Complete(result);
+                    call.SetResult(result);
                 }
             });
             stopwatch.Stop();
@@ -335,7 +336,21 @@ public static class CallTracer
             {
                 if (ActiveCalls.TryGetValue(_methodId, out var call))
                 {
-                    call.Complete(exception: ex);
+                    call.SetResult(exception: ex);
+                }
+            });
+            stopwatch.Stop();
+            TracerProfiler.Add(stopwatch.Elapsed);
+        }
+
+        public void Complete()
+        {
+            var stopwatch = Stopwatch.StartNew();
+            RestoreMethodContext(() =>
+            {
+                if (ActiveCalls.TryGetValue(_methodId, out var call))
+                {
+                    call.Complete();
                 }
             });
             stopwatch.Stop();
@@ -349,20 +364,6 @@ public static class CallTracer
                 if (_disposed) return;
 
                 var stopwatch = Stopwatch.StartNew();
-
-                Context.Value = new AsyncContext
-                {
-                    CurrentMethodId = _methodId,
-                    RequestId = _requestId
-                };
-
-                if (ActiveCalls.TryGetValue(_methodId, out var call))
-                {
-                    if (!call.EndTime.HasValue)
-                    {
-                        call.Complete();
-                    }
-                }
 
                 _onDispose();
                 _disposed = true;

@@ -10,6 +10,7 @@ public class MethodCall
     public string ParentId { get; }
     public string MethodName { get; }
     public long StartTime { get; }
+    public bool Completed { get; private set; }
     public TimeSpan? EndTime { get; private set; }
     public string? Result { get; private set; }
     public Exception? Exception { get; private set; }
@@ -26,11 +27,16 @@ public class MethodCall
         ThreadId = Environment.CurrentManagedThreadId;
     }
 
-    public void Complete(string? result = null, Exception? exception = null)
+    public void SetResult(string? result = null, Exception? exception = null)
     {
-        EndTime = Stopwatch.GetElapsedTime(StartTime);
         Result = result;
         Exception = exception;
+    }
+
+    public void Complete()
+    {
+        EndTime = Stopwatch.GetElapsedTime(StartTime);
+        Completed = true;
     }
 
     public string GetStructuralHash()

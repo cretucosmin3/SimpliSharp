@@ -8,7 +8,7 @@ namespace SimpliSharp.Demos
         [CallTrace]
         public async Task RunAsync()
         {
-            for (int i = 0; i < 100; i++)
+            for (int i = 0; i < 5; i++)
             {
                 await FirstStep(1);
             }
