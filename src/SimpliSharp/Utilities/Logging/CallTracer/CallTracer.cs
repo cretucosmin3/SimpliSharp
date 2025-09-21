@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Linq;
 using System.Text;
+using System.Threading;
 
 namespace SimpliSharp.Utilities.Logging;
 
@@ -8,9 +10,10 @@ public static class CallTracer
 {
     public static bool UseEmojis { get; set; } = true;
 
+    private static long _nextRequestId;
     private static readonly AsyncLocal<AsyncContext> Context = new(valueChangedHandler: null);
-    private static readonly ConcurrentDictionary<string, MethodCall> ActiveCalls = new();
-    private static readonly ConcurrentDictionary<string, List<MethodCall>> RequestCalls = new();
+    private static readonly ConcurrentDictionary<long, MethodCall> ActiveCalls = new();
+    private static readonly ConcurrentDictionary<long, List<MethodCall>> RequestCalls = new();
 
     private static AsyncContext CurrentContext
     {
@@ -21,11 +24,8 @@ public static class CallTracer
         }
     }
 
-    public static void SetRequestIdentifier(string requestId)
+    private static void SetRequestIdentifier(long requestId)
     {
-        if (string.IsNullOrWhiteSpace(requestId))
-            throw new ArgumentException("Request id cannot be null or empty", nameof(requestId));
-
         // Clean up existing request if present
         if (CurrentContext.RequestId != null && CurrentContext.RequestId != requestId)
         {
@@ -41,7 +41,7 @@ public static class CallTracer
         var innerException = breakingException is AggregateException aggEx ? aggEx.InnerExceptions.FirstOrDefault() ?? breakingException : breakingException;
         var requestId = CurrentContext.RequestId;
 
-        if (requestId == null || !RequestCalls.TryGetValue(requestId, out var calls))
+        if (requestId == null || !RequestCalls.TryGetValue(requestId.Value, out var calls))
             return "No trace";
 
         var sb = new StringBuilder();
@@ -57,7 +57,7 @@ public static class CallTracer
             }
         }
 
-        RequestCalls.TryRemove(requestId, out _);
+        RequestCalls.TryRemove(requestId.Value, out _);
         Context.Value = null;
 
         return sb.ToString();
@@ -69,7 +69,7 @@ public static class CallTracer
 
         if (requestId != null)
         {
-            if (RequestCalls.TryGetValue(requestId, out var calls))
+            if (RequestCalls.TryGetValue(requestId.Value, out var calls))
             {
                 lock (calls)
                 {
@@ -80,28 +80,21 @@ public static class CallTracer
                 }
             }
 
-            RequestCalls.TryRemove(requestId, out _);
+            RequestCalls.TryRemove(requestId.Value, out _);
         }
 
         // Clear the context
         Context.Value = null;
     }
 
-    private static void RestoreContext(string? parentId)
+    private static void RestoreContext(long? parentId)
     {
         CurrentContext.CurrentMethodId = parentId;
     }
 
     private static void CleanupMethodCallTree(MethodCall call)
     {
-        List<MethodCall> childrenCopy;
-
-        lock (call.Children)
-        {
-            childrenCopy = new List<MethodCall>(call.Children);
-        }
-
-        foreach (var child in childrenCopy)
+        foreach (var child in call.Children)
         {
             CleanupMethodCallTree(child);
         }
@@ -152,12 +145,7 @@ public static class CallTracer
         }
 
         // --- Process and render children ---
-        List<MethodCall> children;
-        lock (call.Children)
-        {
-            children = call.Children.ToList();
-        }
-
+        var children = call.Children.OrderBy(c => c.StartTime).ToList();
         if (children.Count == 0) return;
 
         var groups = children
@@ -232,27 +220,24 @@ public static class CallTracer
         if (isFirstCall)
         {
             // If this is the first call in the context, we need to set a request ID
-            SetRequestIdentifier(Guid.NewGuid().ToString());
+            SetRequestIdentifier(Interlocked.Increment(ref _nextRequestId));
         }
 
-        string? parentId = CurrentContext.CurrentMethodId;
+        long? parentId = CurrentContext.CurrentMethodId;
         MethodCall methodCall = new(methodName, parentId);
 
         // Store the call
         ActiveCalls.TryAdd(methodCall.Id, methodCall);
 
         // If we have a parent, add this as a child
-        if (!string.IsNullOrEmpty(parentId) && ActiveCalls.TryGetValue(parentId, out var parentCall))
+        if (parentId.HasValue && ActiveCalls.TryGetValue(parentId.Value, out var parentCall))
         {
-            lock (parentCall.Children)
-            {
-                parentCall.Children.Add(methodCall);
-            }
+            parentCall.Children.Add(methodCall);
         }
         else if (CurrentContext.RequestId != null)
         {
             // This is a root call
-            if (RequestCalls.TryGetValue(CurrentContext.RequestId, out var requestCalls))
+            if (RequestCalls.TryGetValue(CurrentContext.RequestId.Value, out var requestCalls))
             {
                 lock (requestCalls)
                 {
@@ -278,14 +263,14 @@ public static class CallTracer
 
     internal class MethodTracer : IDisposable
     {
-        private readonly string _methodId;
-        private readonly string? _parentId;
-        private readonly string? _requestId;
+        private readonly long _methodId;
+        private readonly long? _parentId;
+        private readonly long? _requestId;
         private readonly Action _onDispose;
         private bool _disposed;
         private readonly object _lock = new object();
 
-        public MethodTracer(string methodId, string? parentId, string? requestId, Action onDispose)
+        public MethodTracer(long methodId, long? parentId, long? requestId, Action onDispose)
         {
             _methodId = methodId;
             _parentId = parentId;

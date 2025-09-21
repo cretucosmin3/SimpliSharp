@@ -1,13 +1,16 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using System.Threading;
 
 namespace SimpliSharp.Utilities.Logging;
 
 public class MethodCall
 {
-    public string Id { get; } = Guid.NewGuid().ToString();
-    public string ParentId { get; }
+    private static long _nextId;
+    public long Id { get; }
+    public long? ParentId { get; }
     public string MethodName { get; }
     public long StartTime { get; }
     public bool Completed { get; private set; }
@@ -15,14 +18,15 @@ public class MethodCall
     public string? Result { get; private set; }
     public Exception? Exception { get; private set; }
     public int ThreadId { get; }
-    public List<MethodCall> Children { get; } = [];
+    public ConcurrentBag<MethodCall> Children { get; } = new();
 
     private string? _structuralHash;
 
-    public MethodCall(string methodName, string? parentId = null)
+    public MethodCall(string methodName, long? parentId = null)
     {
+        Id = Interlocked.Increment(ref _nextId);
         MethodName = methodName;
-        ParentId = parentId ?? "";
+        ParentId = parentId;
         StartTime = Stopwatch.GetTimestamp();
         ThreadId = Environment.CurrentManagedThreadId;
     }
@@ -50,12 +54,9 @@ public class MethodCall
             sb.Append(Exception.GetType().Name);
         }
 
-        lock (Children)
+        foreach (var child in Children.OrderBy(c => c.StartTime))
         {
-            foreach (var child in Children.OrderBy(c => c.StartTime))
-            {
-                sb.Append($":({child.GetStructuralHash()})");
-            }
+            sb.Append($":({child.GetStructuralHash()})");
         }
 
         _structuralHash = sb.ToString();

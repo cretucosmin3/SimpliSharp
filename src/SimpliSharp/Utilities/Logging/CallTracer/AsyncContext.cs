@@ -2,6 +2,6 @@ namespace SimpliSharp.Utilities.Logging;
 
 internal class AsyncContext
 {
-    public string? CurrentMethodId { get; set; }
-    public string? RequestId { get; set; }
+    public long? CurrentMethodId { get; set; }
+    public long? RequestId { get; set; }
 }
