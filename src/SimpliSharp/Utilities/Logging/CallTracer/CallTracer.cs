@@ -144,50 +144,86 @@ public static class CallTracer
             sb.Append(" => void");
         }
 
-        // --- Process and render children ---
+        // --- Two-Pass Grouping Logic ---
         var children = call.Children.OrderBy(c => c.StartTime).ToList();
         if (children.Count == 0) return;
 
-        var groups = children
-            .GroupBy(c => c.GetStructuralHash())
+        // First pass: Group by method name and exception status
+        var nameGroups = children
+            .GroupBy(c => new { c.MethodName, HasException = c.Exception != null })
             .Select(g => g.ToList())
-            .OrderBy(g => g.First().StartTime)
-            .ToList();
+            .OrderBy(g => g.First().StartTime);
 
-        foreach (var group in groups)
+        foreach (var nameGroup in nameGroups)
         {
-            if (group.Count > 1)
-            {
-                var firstInGroup = group.First();
-                var totalDuration = group.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Average();
+            // Check if all calls in the group are leaf nodes
+            bool allAreLeafNodes = nameGroup.All(c => c.Children.IsEmpty);
 
+            if (nameGroup.Count > 1 && allAreLeafNodes)
+            {
+                // Optimization: All are leaf nodes, render as a single group
+                var firstInGroup = nameGroup.First();
+                var totalDuration = nameGroup.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Average();
                 sb.AppendLine();
                 sb.Append(new string(' ', (depth + 1) * 2));
-                sb.Append($"- [x{group.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms avg)");
+                sb.Append($"- [x{nameGroup.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms avg)");
 
-                // Since all are structurally identical, the result is the same
+                // Since all are leaf nodes and have the same name, we can assume the result is similar.
+                // We'll show the result from the first one as a representative example.
                 if (firstInGroup.Exception == null)
                 {
                     sb.Append($" => {firstInGroup.Result ?? "void"}");
                 }
                 else
                 {
-                    // If the first one has an exception, the whole group does. Show the first one's exception.
                     bool isBreaking = firstInGroup.Exception == breakingException;
                     if (UseEmojis) sb.Append(isBreaking ? " ❌" : " ⭕");
                     sb.Append($" {GetErrorLineNumber(firstInGroup.Exception)} - {firstInGroup.Exception.GetType().Name}: {firstInGroup.Exception.Message}");
                 }
-
-                // Render children of the first call as a representative example
-                foreach (var child in firstInGroup.Children.OrderBy(c => c.StartTime))
-                {
-                    BuildTraceString(child, sb, depth + 2, breakingException);
-                }
             }
             else
             {
-                // Not a group, render the single call and its children recursively
-                BuildTraceString(group.First(), sb, depth + 1, breakingException);
+                // Fallback to original structural hash grouping for this name group
+                var structuralGroups = nameGroup
+                    .GroupBy(c => c.GetStructuralHash())
+                    .Select(g => g.ToList())
+                    .OrderBy(g => g.First().StartTime)
+                    .ToList();
+
+                foreach (var group in structuralGroups)
+                {
+                    if (group.Count > 1)
+                    {
+                        var firstInGroup = group.First();
+                        var totalDuration = group.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Average();
+
+                        sb.AppendLine();
+                        sb.Append(new string(' ', (depth + 1) * 2));
+                        sb.Append($"- [x{group.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms avg)");
+
+                        if (firstInGroup.Exception == null)
+                        {
+                            sb.Append($" => {firstInGroup.Result ?? "void"}");
+                        }
+                        else
+                        {
+                            bool isBreaking = firstInGroup.Exception == breakingException;
+                            if (UseEmojis) sb.Append(isBreaking ? " ❌" : " ⭕");
+                            sb.Append($" {GetErrorLineNumber(firstInGroup.Exception)} - {firstInGroup.Exception.GetType().Name}: {firstInGroup.Exception.Message}");
+                        }
+
+                        // Render children of the first call as a representative example
+                        foreach (var child in firstInGroup.Children.OrderBy(c => c.StartTime))
+                        {
+                            BuildTraceString(child, sb, depth + 2, breakingException);
+                        }
+                    }
+                    else
+                    {
+                        // Not a group, render the single call and its children recursively
+                        BuildTraceString(group.First(), sb, depth + 1, breakingException);
+                    }
+                }
             }
         }
     }

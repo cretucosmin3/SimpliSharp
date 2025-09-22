@@ -47,6 +47,15 @@ static class Program
     [CallTrace]
     private static async Task PerformErrorPathDemo()
     {
+        var process = Process.GetCurrentProcess();
+        long initialMemory = process.WorkingSet64;
+        long initialGcMemory = GC.GetTotalMemory(false);
+
+        Console.WriteLine($"--- Initial Memory ---");
+        Console.WriteLine($"Working Set: {initialMemory / 1024:N0} KB");
+        Console.WriteLine($"GC Total Memory: {initialGcMemory / 1024:N0} KB");
+        Console.WriteLine("----------------------");
+        
         TracerProfiler.Reset();
         Stopwatch timer = Stopwatch.StartNew();
 
@@ -59,7 +68,7 @@ static class Program
             // - Order 202: Will have a handled notification failure.
             // - Order 902: Will succeed.
             // - Order 303: Will have a breaking failure (payment fails).
-            await processor.ProcessOrdersAsync(new List<int> { 101, 901, 202, 902, 303 });
+            await processor.ProcessOrdersAsync(new List<int> { 101, 901, 202, 902, 303, 500, 804, 505, 606, 234, 455, 986, 876, 521, 785, 435 });
         }
         catch (Exception breakingException)
         {
@@ -75,6 +84,17 @@ static class Program
             Console.WriteLine(traceOutput);
             Console.WriteLine($"--- GetTrace() took {getTraceTimer.Elapsed.TotalMilliseconds:F2}ms to execute. ---");
             Console.WriteLine($"--- Total tracing overhead: {TracerProfiler.TotalOverhead.TotalMilliseconds:F2}ms ---");
+            
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            process.Refresh();
+            long finalMemory = process.WorkingSet64;
+            long finalGcMemory = GC.GetTotalMemory(true);
+
+            Console.WriteLine($"\n--- Final Memory ---");
+            Console.WriteLine($"Working Set: {finalMemory / 1024:N0} KB");
+            Console.WriteLine($"GC Total Memory: {finalGcMemory / 1024:N0} KB");
+            Console.WriteLine("--------------------");
         }
     }
 }
@@ -150,7 +170,7 @@ public class InventoryService
     [CallTrace]
     public async Task CheckStockAsync(int orderId, int attemptNumber)
     {
-        await Task.Delay(10);
+        await Task.Delay(2);
         
         if (orderId == 101 && attemptNumber == 5) // 5th attempt fails
         {
@@ -167,7 +187,7 @@ public class InventoryService
     [CallTrace]
     private async Task CheckProductAvailability(int productId)
     {
-        await Task.Delay(10);
+        await Task.Delay(1);
         throw new InvalidOperationException("SKU lookup failed in warehouse DB.");
     }
 }

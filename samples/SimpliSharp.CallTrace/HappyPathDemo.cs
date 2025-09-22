@@ -8,7 +8,7 @@ namespace SimpliSharp.Demos
         [CallTrace]
         public async Task RunAsync()
         {
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < 500; i++)
             {
                 await FirstStep(1);
             }
@@ -19,7 +19,7 @@ namespace SimpliSharp.Demos
         [CallTrace]
         private async Task FirstStep(int number)
         {
-            await Task.Delay(25);
+            await Task.Delay(2);
         }
 
         [CallTrace]
