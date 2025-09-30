@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <PackageReference Include="MethodDecorator.Fody" Version="1.1.1" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="8.0.0" />
 		<PackageReference Include="Fody" Version="6.9.1" />
 		<PackageReference Include="MethodBoundaryAspect.Fody" Version="2.0.150" />

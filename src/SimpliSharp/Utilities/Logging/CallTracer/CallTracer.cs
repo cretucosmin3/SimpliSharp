@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
+using Newtonsoft.Json;
 
 namespace SimpliSharp.Utilities.Logging;
 
@@ -11,9 +13,21 @@ public static class CallTracer
     public static bool UseEmojis { get; set; } = true;
 
     private static long _nextRequestId;
-    private static readonly AsyncLocal<AsyncContext> Context = new(valueChangedHandler: null);
+    private static readonly AsyncLocal<AsyncContext?> Context = new(valueChangedHandler: null);
     private static readonly ConcurrentDictionary<long, MethodCall> ActiveCalls = new();
     private static readonly ConcurrentDictionary<long, List<MethodCall>> RequestCalls = new();
+    private static readonly ConcurrentDictionary<Type, IEnumerable<PropertyInfo>> TypeAnalysisCache = new();
+
+    private static T? DeepClone<T>(T obj)
+    {
+        if (obj == null)
+            return default(T);
+
+        var json = Newtonsoft.Json.JsonConvert.SerializeObject(obj);
+        return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(json);
+    }
+
+
 
     private static AsyncContext CurrentContext
     {
@@ -52,13 +66,19 @@ public static class CallTracer
             if (rootCalls.Count > 0)
             {
                 var rootCall = rootCalls[0];
-                BuildTraceString(rootCall, sb, 0, innerException);
-                CleanupMethodCallTree(rootCall);
+                if (rootCall != null)
+                {
+                    BuildTraceString(rootCall, sb, 0, innerException);
+                    CleanupMethodCallTree(rootCall);
+                }
             }
         }
 
         RequestCalls.TryRemove(requestId.Value, out _);
-        Context.Value = null;
+        if (Context.Value != null)
+        {
+            Context.Value = null;
+        }
 
         return sb.ToString();
     }
@@ -84,7 +104,10 @@ public static class CallTracer
         }
 
         // Clear the context
-        Context.Value = null;
+        if (Context.Value != null)
+        {
+            Context.Value = null;
+        }
     }
 
     private static void RestoreContext(long? parentId)
@@ -135,13 +158,24 @@ public static class CallTracer
                 sb.Append($" {GetErrorLineNumber(call.Exception)} - {call.Exception.GetType().Name}: {call.Exception.Message}");
             }
         }
-        else if (call.Result != null)
+
+        // --- Render Parameters ---
+        if (call.Parameters.Any())
         {
-            sb.Append($" => {call.Result}");
+            foreach (var param in call.Parameters)
+            {
+                sb.AppendLine();
+                sb.Append(new string(' ', (depth + 1) * 2));
+                sb.Append($">> {param.Key}: {FormatObject(param.Value)}");
+            }
         }
-        else
+
+        // --- Render Result ---
+        if (call.Result != null)
         {
-            sb.Append(" => void");
+            sb.AppendLine();
+            sb.Append(new string(' ', (depth + 1) * 2));
+            sb.Append($"<< {FormatObject(call.Result)}");
         }
 
         // --- Two-Pass Grouping Logic ---
@@ -163,22 +197,30 @@ public static class CallTracer
             {
                 // Optimization: All are leaf nodes, render as a single group
                 var firstInGroup = nameGroup.First();
-                var totalDuration = nameGroup.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Average();
-                sb.AppendLine();
-                sb.Append(new string(' ', (depth + 1) * 2));
-                sb.Append($"- [x{nameGroup.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms avg)");
+                if (firstInGroup != null)
+                {
+                    var totalDuration = nameGroup.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Average();
+                    sb.AppendLine();
+                    sb.Append(new string(' ', (depth + 1) * 2));
+                    sb.Append($"- [x{nameGroup.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms avg)");
 
-                // Since all are leaf nodes and have the same name, we can assume the result is similar.
-                // We'll show the result from the first one as a representative example.
-                if (firstInGroup.Exception == null)
-                {
-                    sb.Append($" => {firstInGroup.Result ?? "void"}");
-                }
-                else
-                {
-                    bool isBreaking = firstInGroup.Exception == breakingException;
-                    if (UseEmojis) sb.Append(isBreaking ? " ❌" : " ⭕");
-                    sb.Append($" {GetErrorLineNumber(firstInGroup.Exception)} - {firstInGroup.Exception.GetType().Name}: {firstInGroup.Exception.Message}");
+                    // Since all are leaf nodes and have the same name, we can assume the result is similar.
+                    // We'll show the result from the first one as a representative example.
+                    if (firstInGroup.Exception == null)
+                    {
+                        if (firstInGroup.Result != null)
+                        {
+                            sb.AppendLine();
+                            sb.Append(new string(' ', (depth + 2) * 2));
+                            sb.Append($"<< {FormatObject(firstInGroup.Result)}");
+                        }
+                    }
+                    else
+                    {
+                        bool isBreaking = firstInGroup.Exception == breakingException;
+                        if (UseEmojis) sb.Append(isBreaking ? " ❌" : " ⭕");
+                        sb.Append($" {GetErrorLineNumber(firstInGroup.Exception)} - {firstInGroup.Exception.GetType().Name}: {firstInGroup.Exception.Message}");
+                    }
                 }
             }
             else
@@ -195,37 +237,117 @@ public static class CallTracer
                     if (group.Count > 1)
                     {
                         var firstInGroup = group.First();
-                        var totalDuration = group.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Average();
-
-                        sb.AppendLine();
-                        sb.Append(new string(' ', (depth + 1) * 2));
-                        sb.Append($"- [x{group.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms avg)");
-
-                        if (firstInGroup.Exception == null)
+                        if (firstInGroup != null)
                         {
-                            sb.Append($" => {firstInGroup.Result ?? "void"}");
-                        }
-                        else
-                        {
-                            bool isBreaking = firstInGroup.Exception == breakingException;
-                            if (UseEmojis) sb.Append(isBreaking ? " ❌" : " ⭕");
-                            sb.Append($" {GetErrorLineNumber(firstInGroup.Exception)} - {firstInGroup.Exception.GetType().Name}: {firstInGroup.Exception.Message}");
-                        }
+                            var totalDuration = group.Select(c => c.EndTime?.TotalMilliseconds ?? 0).Average();
 
-                        // Render children of the first call as a representative example
-                        foreach (var child in firstInGroup.Children.OrderBy(c => c.StartTime))
-                        {
-                            BuildTraceString(child, sb, depth + 2, breakingException);
+                            sb.AppendLine();
+                            sb.Append(new string(' ', (depth + 1) * 2));
+                            sb.Append($"- [x{group.Count}] {firstInGroup.MethodName} ({totalDuration:F2}ms avg)");
+
+                            if (firstInGroup.Exception == null)
+                            {
+                                if (firstInGroup.Result != null)
+                                {
+                                    sb.AppendLine();
+                                    sb.Append(new string(' ', (depth + 2) * 2));
+                                    sb.Append($"<< {FormatObject(firstInGroup.Result)}");
+                                }
+                            }
+                            else
+                            {
+                                bool isBreaking = firstInGroup.Exception == breakingException;
+                                if (UseEmojis) sb.Append(isBreaking ? " ❌" : " ⭕");
+                                sb.Append($" {GetErrorLineNumber(firstInGroup.Exception)} - {firstInGroup.Exception.GetType().Name}: {firstInGroup.Exception.Message}");
+                            }
+
+                            // Render children of the first call as a representative example
+                            foreach (var child in firstInGroup.Children.OrderBy(c => c.StartTime))
+                            {
+                                BuildTraceString(child, sb, depth + 2, breakingException);
+                            }
                         }
                     }
                     else
                     {
                         // Not a group, render the single call and its children recursively
-                        BuildTraceString(group.First(), sb, depth + 1, breakingException);
+                        var firstInGroup = group.First();
+                        if (firstInGroup != null)
+                        {
+                            BuildTraceString(firstInGroup, sb, depth + 1, breakingException);
+                        }
                     }
                 }
             }
         }
+    }
+
+    private static string FormatObject(object? obj)
+    {
+        if (obj == null) return "null";
+
+        var type = obj.GetType();
+        if (type.IsPrimitive || type == typeof(string) || type == typeof(decimal))
+        {
+            return obj.ToString() ?? "null";
+        }
+
+        if (obj is Task task)
+        {
+            if (task.IsCompletedSuccessfully)
+            {
+                var resultProperty = task.GetType().GetProperty("Result");
+                if (resultProperty != null)
+                {
+                    var result = resultProperty.GetValue(task);
+                    if (result != null)
+                    {
+                        return FormatObject(result);
+                    }
+                }
+            }
+            return "{...}";
+        }
+
+        var traceDataAttr = type.GetCustomAttribute<TraceDataAttribute>();
+        if (traceDataAttr == null)
+        {
+            return "{...}";
+        }
+
+        var properties = TypeAnalysisCache.GetOrAdd(type, t =>
+        {
+            return t.GetProperties().Where(p => p.GetCustomAttribute<TracePropertyAttribute>() != null);
+        });
+
+        var sb = new StringBuilder();
+        sb.Append(type.Name);
+        sb.Append(" { ");
+
+        var first = true;
+        foreach (var prop in properties)
+        {
+            if (!first)
+            {
+                sb.Append(", ");
+            }
+            first = false;
+
+            sb.Append(prop.Name);
+            sb.Append(": ");
+            var value = prop.GetValue(obj);
+            if (value != null)
+            {
+                sb.Append(FormatObject(value));
+            }
+            else
+            {
+                sb.Append("null");
+            }
+        }
+
+        sb.Append(" }");
+        return sb.ToString();
     }
 
     private static string GetErrorLineNumber(Exception ex)
@@ -248,7 +370,7 @@ public static class CallTracer
         return "line unknown";
     }
 
-    internal static MethodTracer TraceMethod(string methodName)
+    internal static MethodTracer TraceMethod(string methodName, IDictionary<string, object> parameters)
     {
         var stopwatch = Stopwatch.StartNew();
 
@@ -260,7 +382,7 @@ public static class CallTracer
         }
 
         long? parentId = CurrentContext.CurrentMethodId;
-        MethodCall methodCall = new(methodName, parentId);
+        MethodCall methodCall = new(methodName, parentId, parameters);
 
         // Store the call
         ActiveCalls.TryAdd(methodCall.Id, methodCall);
@@ -336,7 +458,7 @@ public static class CallTracer
         }
 
 
-        public void SetResult(string? result)
+        public void SetResult(object? result)
         {
             var stopwatch = Stopwatch.StartNew();
             RestoreMethodContext(() =>

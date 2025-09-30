@@ -15,23 +15,25 @@ public class MethodCall
     public long StartTime { get; }
     public bool Completed { get; private set; }
     public TimeSpan? EndTime { get; private set; }
-    public string? Result { get; private set; }
+    public object? Result { get; private set; }
     public Exception? Exception { get; private set; }
     public int ThreadId { get; }
     public ConcurrentBag<MethodCall> Children { get; } = new();
+    public IDictionary<string, object> Parameters { get; }
 
     private string? _structuralHash;
 
-    public MethodCall(string methodName, long? parentId = null)
+    public MethodCall(string methodName, long? parentId = null, IDictionary<string, object>? parameters = null)
     {
         Id = Interlocked.Increment(ref _nextId);
         MethodName = methodName;
         ParentId = parentId;
+        Parameters = parameters ?? new Dictionary<string, object>();
         StartTime = Stopwatch.GetTimestamp();
         ThreadId = Environment.CurrentManagedThreadId;
     }
 
-    public void SetResult(string? result = null, Exception? exception = null)
+    public void SetResult(object? result = null, Exception? exception = null)
     {
         Result = result;
         Exception = exception;

@@ -50,8 +50,8 @@ public class SmartDataProcessor<T> : IDisposable
     public bool IsPaused { get; private set; }
 
     // --- Events ---
-    public event Action<Exception> OnException;
-    public event Action<double> OnCpuUsageChange;
+    public event Action<Exception> OnException = null!;
+    public event Action<double> OnCpuUsageChange = null!;
 
     /// <summary>
     /// Creates a new SmartDataProcessor with default settings.
@@ -116,7 +116,7 @@ public class SmartDataProcessor<T> : IDisposable
     /// <param name="action">Action to process the data with</param>
     public async Task EnqueueOrWaitAsync(T data, Action<T> action)
     {
-        LazyInitializer.EnsureInitialized(ref _managerTask, ref _managerLock, () => Task.Run(ManagerLoopAsync));
+        _ = LazyInitializer.EnsureInitialized(ref _managerTask, ref _managerLock, () => Task.Run(ManagerLoopAsync));
 
         while (true)
         {
