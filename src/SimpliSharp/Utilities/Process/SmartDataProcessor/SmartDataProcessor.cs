@@ -14,6 +14,10 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
     private const double CpuHeadroomBuffer = 2;
     private const double ShortJobThresholdMs = 100;
     private const double SmoothingFactor = 0.3;
+    
+    // --- Batch Optimization Constants ---
+    private const double TargetTaskDurationMs = 50.0;
+    private const int MinSamplesForOptimization = 10;
 
     // --- State ---
     private readonly SmartDataProcessorSettings _settings;
@@ -31,13 +35,32 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
     private bool _isInitialRampUp = true;
     private long _lastCheckTimestamp = 0;
     private bool _disposed = false;
+    
+    // --- Batch Optimization State ---
+    private readonly object _optimizationLock = new();
+    private double _smoothedTimePerItem = 0;
+    private int _samplesCollected = 0;
+    private int _optimalBatchSize = 1;
 
     public ProcessingMetrics Metrics { get; } = new();
     public bool IsPaused { get; private set; }
+    
+    /// <summary>
+    /// The recommended number of items to batch together for optimal performance.
+    /// Updates automatically as the processor learns from execution patterns.
+    /// Returns 1 if batch size optimization is not applicable or insufficient data is available.
+    /// </summary>
+    public int OptimalBatchSize => _optimalBatchSize;
+    
+    /// <summary>
+    /// Indicates whether enough data has been collected to provide a reliable batch size recommendation.
+    /// </summary>
+    public bool HasOptimalBatchSizeData => _samplesCollected >= MinSamplesForOptimization;
 
     // --- Events ---
     public event Action<Exception>? OnException;
     public event Action<double>? OnCpuUsageChange;
+    public event Action<int>? OnOptimalBatchSizeChanged;
 
     public SmartDataProcessor() : this(new SmartDataProcessorSettings())
     {
@@ -390,6 +413,7 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
     private async Task ProcessJobAsync((T Data, Action<T> Action) job)
     {
         var sw = Stopwatch.StartNew();
+        int itemCount = EstimateItemCount(job.Data);
 
         try
         {
@@ -403,10 +427,143 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
         finally
         {
             sw.Stop();
-            Metrics.AddJobDuration(sw.Elapsed.TotalMilliseconds);
+            double durationMs = sw.Elapsed.TotalMilliseconds;
+            
+            Metrics.AddJobDuration(durationMs);
             Interlocked.Decrement(ref _activeTaskCount);
             
-            // No need to trigger manually - manager loop will react to channel availability
+            // Update batch size optimization
+            if (itemCount > 0)
+            {
+                UpdateBatchSizeOptimization(itemCount, durationMs);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Estimates the number of items in the data being processed.
+    /// Returns 0 if item count cannot be determined.
+    /// </summary>
+    private static int EstimateItemCount(T data)
+    {
+        return data switch
+        {
+            Array array => array.Length,
+            System.Collections.ICollection collection => collection.Count,
+            System.Collections.Generic.ICollection<object> genericCollection => genericCollection.Count,
+            System.Collections.Generic.IReadOnlyCollection<object> readOnlyCollection => readOnlyCollection.Count,
+            _ => 0
+        };
+    }
+
+    /// <summary>
+    /// Updates the optimal batch size recommendation based on observed execution patterns.
+    /// </summary>
+    private void UpdateBatchSizeOptimization(int itemCount, double durationMs)
+    {
+        lock (_optimizationLock)
+        {
+            double timePerItem = durationMs / itemCount;
+            
+            // Use exponential moving average for smoothing
+            const double alpha = 0.2;
+            if (_samplesCollected == 0)
+            {
+                _smoothedTimePerItem = timePerItem;
+            }
+            else
+            {
+                _smoothedTimePerItem = (alpha * timePerItem) + ((1 - alpha) * _smoothedTimePerItem);
+            }
+            
+            _samplesCollected++;
+
+            // Only update recommendation after collecting sufficient samples
+            if (_samplesCollected >= MinSamplesForOptimization)
+            {
+                int newOptimalSize = CalculateOptimalBatchSize(_smoothedTimePerItem, Metrics.AvgTaskTime);
+                
+                if (newOptimalSize != _optimalBatchSize)
+                {
+                    _optimalBatchSize = newOptimalSize;
+                    OnOptimalBatchSizeChanged?.Invoke(_optimalBatchSize);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Calculates the optimal batch size based on time per item and average task duration.
+    /// </summary>
+    private static int CalculateOptimalBatchSize(double timePerItem, double avgTaskDuration)
+    {
+        if (timePerItem <= 0)
+            return 1;
+
+        // If tasks are already in the sweet spot, don't change batch size
+        if (avgTaskDuration >= TargetTaskDurationMs * 0.8 && 
+            avgTaskDuration <= TargetTaskDurationMs * 1.2)
+        {
+            return 1;
+        }
+
+        // Calculate batch size to reach target duration
+        int calculatedSize = (int)Math.Ceiling(TargetTaskDurationMs / timePerItem);
+
+        // Apply reasonable bounds based on current task duration
+        if (avgTaskDuration < 5) // Very light tasks
+        {
+            return Math.Clamp(calculatedSize, 100, 10000);
+        }
+        else if (avgTaskDuration < 50) // Light tasks
+        {
+            return Math.Clamp(calculatedSize, 10, 1000);
+        }
+        else if (avgTaskDuration < 200) // Medium tasks
+        {
+            return Math.Clamp(calculatedSize, 1, 100);
+        }
+        else if (avgTaskDuration < 500) // Heavy tasks
+        {
+            return Math.Clamp(calculatedSize, 1, 10);
+        }
+        else // Very heavy tasks
+        {
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// Gets a human-readable recommendation for batch sizing based on current data.
+    /// </summary>
+    public string GetBatchSizeRecommendation()
+    {
+        if (!HasOptimalBatchSizeData)
+        {
+            return "Insufficient data collected. Process at least 10 batches to get a recommendation.";
+        }
+
+        double avgTaskTime = Metrics.AvgTaskTime;
+        
+        string workloadType = avgTaskTime switch
+        {
+            < 5 => "very light",
+            < 50 => "light",
+            < 200 => "medium",
+            < 500 => "heavy",
+            _ => "very heavy"
+        };
+
+        if (_optimalBatchSize == 1)
+        {
+            return $"Tasks are {workloadType} ({avgTaskTime:F2}ms avg). " +
+                   $"Current granularity is optimal - continue processing individual items.";
+        }
+        else
+        {
+            return $"Tasks are {workloadType} ({avgTaskTime:F2}ms avg). " +
+                   $"Recommend batching {_optimalBatchSize} items together to reduce overhead " +
+                   $"and target ~{TargetTaskDurationMs}ms per task.";
         }
     }
 }
