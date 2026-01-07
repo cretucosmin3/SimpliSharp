@@ -1,15 +1,17 @@
 ﻿using System.Threading.Tasks.Dataflow;
 using SimpliSharp.Extensions.Batch;
 using SimpliSharp.Utilities.Process;
+using SimpliSharp.Utilities.Process.Examples;
 
 Console.WriteLine("SimpliSharp Demo Application");
 Console.WriteLine("---------------------------");
 
 Console.WriteLine("Available Demos:");
 Console.WriteLine("1. SmartDataProcessor Example");
-Console.WriteLine("2. ActionBlock Example (from TPL Dataflow)");
-Console.WriteLine("3. Enumerable.Batch");
-Console.WriteLine("4. Enumerable.BatchSliding");
+Console.WriteLine("2. SmartDataProcessor Auto Learning");
+Console.WriteLine("3. ActionBlock Example (from TPL Dataflow)");
+Console.WriteLine("4. Enumerable.Batch");
+Console.WriteLine("5. Enumerable.BatchSliding");
 
 Console.WriteLine("[Enter] to exit");
 
@@ -23,14 +25,18 @@ switch (choice.Key)
         break;
     case ConsoleKey.D2:
     case ConsoleKey.NumPad2:
-        ActionBlock_Example().Wait();
+        ComparisonExamples.CompareSmartProcessorVsActionBlock().Wait();
         break;
     case ConsoleKey.D3:
     case ConsoleKey.NumPad3:
-        EnumerableBatch_Example();
+        ActionBlock_Example().Wait();
         break;
     case ConsoleKey.D4:
     case ConsoleKey.NumPad4:
+        EnumerableBatch_Example();
+        break;
+    case ConsoleKey.D5:
+    case ConsoleKey.NumPad5:
         EnumerableBatchSliding_Example();
         break;
     default:

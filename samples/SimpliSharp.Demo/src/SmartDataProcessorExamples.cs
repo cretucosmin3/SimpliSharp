@@ -17,7 +17,7 @@ public static class ComparisonExamples
         Console.WriteLine("=== Performance Comparison: SmartDataProcessor vs ActionBlock ===\n");
 
         // Increased dataset size for longer running test (15+ seconds)
-        int totalItems = 2_000_000;
+        int totalItems = 500_000;
         var allData = Enumerable.Range(0, totalItems).ToArray();
         
         Console.WriteLine($"Dataset: {totalItems:N0} items");
@@ -253,7 +253,7 @@ public static class ComparisonExamples
         var settings = new SmartDataProcessorSettings
         {
             MaxCpuUsage = 95,
-            ScalingBehavior = ScalingBehavior.Normal
+            ScalingBehavior = ScalingBehavior.Aggressive
         };
 
         using var processor = new SmartDataProcessor<int[]>(settings);
@@ -273,7 +273,8 @@ public static class ComparisonExamples
         int iterationsPerItem = useHeavierWorkload ? 500_000 : 50_000;
         
         // Use FIXED batch size - never adapt
-        int fixedBatchSize = 500;
+        // Use same as ActionBlock for fair comparison
+        int fixedBatchSize = 10;
         int itemsProcessed = 0;
         int batchCount = 0;
 
@@ -336,7 +337,7 @@ public static class ComparisonExamples
         var settings = new SmartDataProcessorSettings
         {
             MaxCpuUsage = 95,
-            ScalingBehavior = ScalingBehavior.Normal
+            ScalingBehavior = ScalingBehavior.Aggressive
         };
 
         using var processor = new SmartDataProcessor<int[]>(settings);
@@ -405,7 +406,7 @@ public static class ComparisonExamples
             // Adapt to processor's recommendation
             if (processor.HasOptimalBatchSizeData)
             {
-                currentBatchSize = processor.OptimalBatchSize;
+                currentBatchSize = (int)(processor.OptimalBatchSize * 1.5);
             }
 
             if (batchCount % 50 == 0)

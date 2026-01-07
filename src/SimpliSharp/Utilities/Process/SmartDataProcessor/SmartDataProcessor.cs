@@ -13,10 +13,10 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
     private const int MinCheckIntervalMs = 15;
     private const double CpuHeadroomBuffer = 2;
     private const double ShortJobThresholdMs = 100;
-    private const double SmoothingFactor = 0.3;
+    private const double SmoothingFactor = 0.2;
     
     // --- Batch Optimization Constants ---
-    private const double TargetTaskDurationMs = 50.0;
+    private const double TargetTaskDurationMs = 50.0; // Sweet spot for task duration
     private const int MinSamplesForOptimization = 10;
 
     // --- State ---
@@ -118,10 +118,14 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // Check CPU saturation for additional backpressure
-        while (_smoothedCpu > _maxCpuUsage && _cpuMonitor is not NullCpuMonitor)
+        // Only apply CPU backpressure if we have enough data to analyze (avoid cold start issues)
+        if (_samplesCollected >= MinSamplesForOptimization)
         {
-            await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+            // Check CPU saturation for additional backpressure
+            while (_smoothedCpu > _maxCpuUsage && _cpuMonitor is not NullCpuMonitor)
+            {
+                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         // Channel handles queue-based backpressure automatically
@@ -481,7 +485,7 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
             // Only update recommendation after collecting sufficient samples
             if (_samplesCollected >= MinSamplesForOptimization)
             {
-                int newOptimalSize = CalculateOptimalBatchSize(_smoothedTimePerItem, Metrics.AvgTaskTime);
+                int newOptimalSize = CalculateOptimalBatchSize(_smoothedTimePerItem, Metrics.AvgTaskTime, itemCount);
                 
                 if (newOptimalSize != _optimalBatchSize)
                 {
@@ -495,41 +499,49 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
     /// <summary>
     /// Calculates the optimal batch size based on time per item and average task duration.
     /// </summary>
-    private static int CalculateOptimalBatchSize(double timePerItem, double avgTaskDuration)
+    private static int CalculateOptimalBatchSize(double timePerItem, double avgTaskDuration, int currentBatchSize)
     {
-        if (timePerItem <= 0)
-            return 1;
+        if (timePerItem <= 0 || avgTaskDuration <= 0)
+            return currentBatchSize;
 
-        // If tasks are already in the sweet spot, don't change batch size
-        if (avgTaskDuration >= TargetTaskDurationMs * 0.8 && 
-            avgTaskDuration <= TargetTaskDurationMs * 1.2)
+        // If current batch is already producing tasks in the optimal range, keep it
+        if (avgTaskDuration >= TargetTaskDurationMs * 0.7 && 
+            avgTaskDuration <= TargetTaskDurationMs * 1.5)
         {
-            return 1;
+            return currentBatchSize;
         }
 
-        // Calculate batch size to reach target duration
-        int calculatedSize = (int)Math.Ceiling(TargetTaskDurationMs / timePerItem);
+        // Calculate how many items we need to hit the target duration
+        int calculatedSize = (int)Math.Round(TargetTaskDurationMs / timePerItem);
 
-        // Apply reasonable bounds based on current task duration
-        if (avgTaskDuration < 5) // Very light tasks
+        // Prevent extreme values
+        calculatedSize = Math.Max(1, calculatedSize);
+
+        // Apply bounds based on workload characteristics
+        if (avgTaskDuration < 5) // Very light tasks (< 5ms)
         {
-            return Math.Clamp(calculatedSize, 100, 10000);
+            // Need large batches to reduce overhead
+            return Math.Clamp(calculatedSize, 50, 5000);
         }
-        else if (avgTaskDuration < 50) // Light tasks
+        else if (avgTaskDuration < 20) // Light tasks (5-20ms)
         {
-            return Math.Clamp(calculatedSize, 10, 1000);
+            // Moderate batching needed
+            return Math.Clamp(calculatedSize, 10, 500);
         }
-        else if (avgTaskDuration < 200) // Medium tasks
+        else if (avgTaskDuration < TargetTaskDurationMs) // Below target (20-50ms)
         {
-            return Math.Clamp(calculatedSize, 1, 100);
+            // Small increase to reach target
+            return Math.Clamp(calculatedSize, Math.Max(1, currentBatchSize / 2), currentBatchSize * 3);
         }
-        else if (avgTaskDuration < 500) // Heavy tasks
+        else if (avgTaskDuration < 200) // Near or above target (50-200ms)
         {
-            return Math.Clamp(calculatedSize, 1, 10);
+            // Tasks are good size, small adjustments only
+            return Math.Clamp(calculatedSize, Math.Max(1, currentBatchSize / 2), currentBatchSize * 2);
         }
-        else // Very heavy tasks
+        else // Heavy tasks (> 200ms)
         {
-            return 1;
+            // Tasks are too large, reduce batch size
+            return Math.Clamp(calculatedSize, 1, Math.Max(1, currentBatchSize / 2));
         }
     }
 
