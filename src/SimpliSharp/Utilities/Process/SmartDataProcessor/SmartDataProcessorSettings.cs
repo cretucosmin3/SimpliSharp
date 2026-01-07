@@ -23,4 +23,12 @@ public class SmartDataProcessorSettings
     /// based on the current number of workers.
     /// </summary>
     public int QueueBufferMultiplier { get; set; } = 2;
+
+    /// <summary>
+    /// Determines how aggressively the processor scales up concurrency.
+    /// - Gradual: Conservative, incremental increases (slowest startup)
+    /// - Normal: Quick initial ramp-up, then fine-tuned adjustments (default, balanced)
+    /// - Aggressive: Immediate max concurrency, only backs off when needed (fastest startup)
+    /// </summary>
+    public ScalingBehavior ScalingBehavior { get; set; } = ScalingBehavior.Normal;
 }
