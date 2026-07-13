@@ -1,92 +1,90 @@
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace SimpliSharp.Utilities.Process;
 
-public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
+[StructLayout(LayoutKind.Explicit, Size = 128)]
+internal struct PaddedInt64
 {
-    // --- Configuration ---
-    private const int MinCheckIntervalMs = 15;
-    private const double CpuHeadroomBuffer = 2;
-    private const double ShortJobThresholdMs = 100;
+    [FieldOffset(64)]
+    public long Value;
+}
+
+[StructLayout(LayoutKind.Explicit, Size = 128)]
+internal struct PaddedDouble
+{
+    [FieldOffset(64)]
+    public double Value;
+}
+
+public sealed class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
+{
+    // --- Constants ---
+    private const int MinCheckIntervalMs = 20;
     private const double SmoothingFactor = 0.2;
-    
-    // --- Batch Optimization Constants ---
-    private const double TargetTaskDurationMs = 50.0; // Sweet spot for task duration
-    private const int MinSamplesForOptimization = 10;
+    private const int LocalBatchFetchSize = 16; 
 
     // --- State ---
     private readonly SmartDataProcessorSettings _settings;
-    private readonly double _maxCpuUsage;
-    private readonly Channel<(T Data, Action<T> Action)> _jobChannel;
+    private readonly Channel<Job> _jobChannel;
     private readonly ICpuMonitor _cpuMonitor;
     private readonly CancellationTokenSource _cts = new();
-    private readonly SemaphoreSlim _concurrencyCheckLock = new(1, 1);
     
-    private Task? _managerTask;
-    private int _activeTaskCount = 0;
-    private double _smoothedCpu = 0;
-    private int _targetConcurrency = 1;
-    private double _lastAverageDuration;
-    private bool _isInitialRampUp = true;
-    private long _lastCheckTimestamp = 0;
-    private bool _disposed = false;
+    // --- Hot Counters (Padded) ---
+    // Total workers currently alive (working OR waiting)
+    private PaddedInt64 _activeWorkerCount; 
+    // Workers currently executing a job (not waiting on channel)
+    private PaddedInt64 _busyWorkerCount;   
+    private PaddedInt64 _totalProcessedCount;
+    private PaddedDouble _smoothedCpu;
     
-    // --- Batch Optimization State ---
-    private readonly object _optimizationLock = new();
-    private double _smoothedTimePerItem = 0;
-    private int _samplesCollected = 0;
-    private int _optimalBatchSize = 1;
-
-    public ProcessingMetrics Metrics { get; } = new();
+    // Cold State
+    private readonly Task _managerTask;
+    private volatile int _targetConcurrency;
+    private bool _disposed;
+    
+    private readonly ProcessingMetrics _metrics = new();
+    
+    public ProcessingMetrics Metrics => _metrics;
     public bool IsPaused { get; private set; }
-    
-    /// <summary>
-    /// The recommended number of items to batch together for optimal performance.
-    /// Updates automatically as the processor learns from execution patterns.
-    /// Returns 1 if batch size optimization is not applicable or insufficient data is available.
-    /// </summary>
-    public int OptimalBatchSize => _optimalBatchSize;
-    
-    /// <summary>
-    /// Indicates whether enough data has been collected to provide a reliable batch size recommendation.
-    /// </summary>
-    public bool HasOptimalBatchSizeData => _samplesCollected >= MinSamplesForOptimization;
 
-    // --- Events ---
     public event Action<Exception>? OnException;
     public event Action<double>? OnCpuUsageChange;
-    public event Action<int>? OnOptimalBatchSizeChanged;
-
-    public SmartDataProcessor() : this(new SmartDataProcessorSettings())
-    {
-    }
-
-    public SmartDataProcessor(double maxCpuUsage) 
-        : this(new SmartDataProcessorSettings { MaxCpuUsage = maxCpuUsage })
-    {
-    }
     
-    public SmartDataProcessor(SmartDataProcessorSettings settings)
+    private readonly struct Job
     {
-        _settings = settings;
-        _maxCpuUsage = Math.Max(_settings.MaxCpuUsage - CpuHeadroomBuffer, CpuHeadroomBuffer);
+        public readonly T Data;
+        public readonly Action<T> Action;
 
-        // Create bounded channel for backpressure
-        int capacity = (_settings.MaxDegreeOfParallelism ?? Environment.ProcessorCount) 
-                       * _settings.QueueBufferMultiplier;
-        _jobChannel = Channel.CreateBounded<(T, Action<T>)>(
-            new BoundedChannelOptions(capacity)
-            {
-                FullMode = BoundedChannelFullMode.Wait
-            });
+        public Job(T data, Action<T> action)
+        {
+            Data = data;
+            Action = action;
+        }
+    }
 
-        bool useCpuMonitoring = _settings.MaxCpuUsage < 100;
-        if (useCpuMonitoring)
+    public SmartDataProcessor(SmartDataProcessorSettings? settings = null)
+    {
+        _settings = settings ?? new SmartDataProcessorSettings();
+        
+        var options = new BoundedChannelOptions((_settings.MaxDegreeOfParallelism ?? Environment.ProcessorCount) * _settings.QueueBufferMultiplier)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = false, 
+            SingleWriter = false,
+            AllowSynchronousContinuations = false 
+        };
+        
+        _jobChannel = Channel.CreateBounded<Job>(options);
+
+        // CPU Monitor Setup
+        if (_settings.MaxCpuUsage < 100)
         {
             if (OperatingSystem.IsWindows()) _cpuMonitor = new WindowsCpuMonitor();
             else if (OperatingSystem.IsLinux()) _cpuMonitor = new LinuxCpuMonitor();
@@ -97,166 +95,170 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
         {
             _cpuMonitor = new NullCpuMonitor();
         }
-
-        // Start the manager task immediately
-        _managerTask = Task.Run(ManagerLoopAsync);
+        
+        _targetConcurrency = Math.Max(1, (_settings.MaxDegreeOfParallelism ?? Environment.ProcessorCount) / 2);
+        
+        _managerTask = Task.Factory.StartNew(ManagerLoopAsync, TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach);
     }
 
-    internal SmartDataProcessor(SmartDataProcessorSettings settings, ICpuMonitor cpuMonitor)
-        : this(settings)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ValueTask EnqueueOrWaitAsync(T data, Action<T> action, CancellationToken cancellationToken = default)
     {
-        _cpuMonitor = cpuMonitor;
-    }
+        if (_disposed) throw new ObjectDisposedException(nameof(SmartDataProcessor<T>));
 
-    public void Pause() => IsPaused = true;
-    public void Resume() => IsPaused = false;
-
-    /// <summary>
-    /// Enqueues a data item for processing with natural backpressure.
-    /// </summary>
-    public async Task EnqueueOrWaitAsync(T data, Action<T> action, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
-        // Only apply CPU backpressure if we have enough data to analyze (avoid cold start issues)
-        if (_samplesCollected >= MinSamplesForOptimization)
+        // Fast path
+        if (_jobChannel.Writer.TryWrite(new Job(data, action)))
         {
-            // Check CPU saturation for additional backpressure
-            while (_smoothedCpu > _maxCpuUsage && _cpuMonitor is not NullCpuMonitor)
-            {
-                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
-            }
+            return ValueTask.CompletedTask;
         }
 
-        // Channel handles queue-based backpressure automatically
-        await _jobChannel.Writer.WriteAsync((data, action), cancellationToken).ConfigureAwait(false);
+        return _jobChannel.Writer.WriteAsync(new Job(data, action), cancellationToken);
     }
 
     /// <summary>
-    /// Waits for all currently queued and running jobs to complete.
+    /// Waits until the queue is empty AND all workers are idle (not processing items).
+    /// Does NOT dispose the processor.
     /// </summary>
     public async Task WaitForAllAsync()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_disposed) return;
 
-        // Wait for queue to drain
-        while (_jobChannel.Reader.Count > 0)
+        while (true)
         {
-            await Task.Delay(50).ConfigureAwait(false);
-        }
+            bool isQueueEmpty = _jobChannel.Reader.Count == 0;
+            // We check if BusyWorkers are 0, not ActiveWorkers
+            long busyWorkers = Interlocked.Read(ref _busyWorkerCount.Value);
 
-        // Wait for active tasks to complete
-        while (Interlocked.CompareExchange(ref _activeTaskCount, 0, 0) > 0)
-        {
-            await Task.Delay(50).ConfigureAwait(false);
+            if (isQueueEmpty && busyWorkers == 0)
+            {
+                // Double check to prevent race where item was added just as we checked
+                if (_jobChannel.Reader.Count == 0)
+                    return;
+            }
+
+            await Task.Delay(15).ConfigureAwait(false);
         }
     }
 
-    public void Dispose()
-    {
-        DisposeAsync().AsTask().GetAwaiter().GetResult();
-    }
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
         _disposed = true;
 
-        // Signal shutdown
         _jobChannel.Writer.Complete();
         await _cts.CancelAsync();
 
-        // Wait for manager to finish
-        if (_managerTask != null)
-        {
-            try
-            {
-                await _managerTask.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected during cancellation
-            }
-        }
+        try { await _managerTask.ConfigureAwait(false); } catch { }
 
-        // Dispose resources
         _cts.Dispose();
-        _concurrencyCheckLock.Dispose();
+        (_cpuMonitor as IDisposable)?.Dispose();
+    }
+
+    [SkipLocalsInit]
+    private async Task ManagerLoopAsync()
+    {
+        var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(MinCheckIntervalMs));
+        int maxConcurrency = _settings.MaxDegreeOfParallelism ?? Environment.ProcessorCount;
         
-        if (_cpuMonitor is IDisposable disposable)
+        while (await timer.WaitForNextTickAsync(_cts.Token))
         {
-            disposable.Dispose();
+            if (IsPaused) continue;
+
+            AdjustConcurrency(maxConcurrency);
+            
+            long active = Interlocked.Read(ref _activeWorkerCount.Value);
+            int target = _targetConcurrency;
+            int queueCount = _jobChannel.Reader.Count;
+
+            // Spawn logic
+            if (active < target && queueCount > 0)
+            {
+                int needed = target - (int)active;
+                int spawnBatch = Math.Min(needed, 4); 
+
+                for (int i = 0; i < spawnBatch; i++)
+                {
+                    _ = Task.Run(WorkerLoop); 
+                }
+            }
         }
     }
 
-    /// <summary>
-    /// Main manager loop that coordinates task launching and concurrency adjustments.
-    /// </summary>
-    private async Task ManagerLoopAsync()
+    [SkipLocalsInit]
+    private async Task WorkerLoop()
     {
+        Interlocked.Increment(ref _activeWorkerCount.Value);
+        
+        // We use a local flag to ensure we decrement Active count correctly in finally block
+        // regardless of how we exit (exception, cancellation, or suicide)
+        bool suicide = false;
+
         try
         {
+            var reader = _jobChannel.Reader;
+            var sw = new Stopwatch();
+            Job[] localBuffer = new Job[LocalBatchFetchSize];
+
             while (!_cts.IsCancellationRequested)
             {
-                // Wait for work to be available or cancellation
-                try
+                // --- ATOMIC SCALE DOWN CHECK ---
+                long currentActive = Interlocked.Read(ref _activeWorkerCount.Value);
+                int currentTarget = _targetConcurrency;
+
+                if (currentActive > currentTarget)
                 {
-                    await _jobChannel.Reader.WaitToReadAsync(_cts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
+                    // Attempt to suicide using CAS
+                    // We only break if WE are the one who successfully decremented the counter
+                    if (Interlocked.CompareExchange(ref _activeWorkerCount.Value, currentActive - 1, currentActive) == currentActive)
+                    {
+                        suicide = true; 
+                        return; // Exit immediately
+                    }
                 }
 
-                if (IsPaused)
+                // --- FETCH WORK ---
+                int fetched = 0;
+                
+                // 1. Try greedy synchronous read
+                if (reader.TryRead(out localBuffer[0]))
                 {
-                    await Task.Delay(100, _cts.Token).ConfigureAwait(false);
-                    continue;
-                }
-
-                // Throttle checks
-                long currentTime = Stopwatch.GetTimestamp();
-                long lastCheck = Interlocked.Read(ref _lastCheckTimestamp);
-                long elapsedMs = (currentTime - lastCheck) * 1000 / Stopwatch.Frequency;
-
-                if (elapsedMs >= MinCheckIntervalMs || lastCheck == 0)
-                {
-                    Interlocked.Exchange(ref _lastCheckTimestamp, currentTime);
-                    
-                    await CheckAndLaunchTasksAsync().ConfigureAwait(false);
+                    fetched = 1;
+                    while (fetched < LocalBatchFetchSize && reader.TryRead(out localBuffer[fetched]))
+                    {
+                        fetched++;
+                    }
                 }
                 else
                 {
-                    // Small delay to avoid tight loop
-                    await Task.Delay(1, _cts.Token).ConfigureAwait(false);
+                    // 2. Async wait if empty
+                    try 
+                    {
+                        await reader.WaitToReadAsync(_cts.Token).ConfigureAwait(false);
+                        continue; 
+                    }
+                    catch (OperationCanceledException) { break; }
+                }
+
+                // --- PROCESS BATCH ---
+                // Mark as busy before processing
+                Interlocked.Add(ref _busyWorkerCount.Value, 1);
+                
+                try
+                {
+                    for (int i = 0; i < fetched; i++)
+                    {
+                        ProcessSingleJob(localBuffer[i], sw);
+                        localBuffer[i] = default; 
+                    }
+                }
+                finally
+                {
+                    // Always mark as not busy after batch
+                    Interlocked.Add(ref _busyWorkerCount.Value, -1);
                 }
             }
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected during shutdown
-        }
-        catch (Exception ex)
-        {
-            OnException?.Invoke(ex);
-        }
-    }
-
-    /// <summary>
-    /// Updates concurrency and launches worker tasks as needed.
-    /// </summary>
-    private async Task CheckAndLaunchTasksAsync()
-    {
-        // Use semaphore to prevent concurrent execution
-        if (!await _concurrencyCheckLock.WaitAsync(0).ConfigureAwait(false))
-        {
-            return; // Another check is in progress
-        }
-
-        try
-        {
-            UpdateConcurrency();
-            await LaunchWorkerTasksAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -264,318 +266,61 @@ public class SmartDataProcessor<T> : IAsyncDisposable, IDisposable
         }
         finally
         {
-            _concurrencyCheckLock.Release();
+            // Only decrement if we didn't already decrement via the suicide path
+            if (!suicide)
+            {
+                Interlocked.Decrement(ref _activeWorkerCount.Value);
+            }
         }
     }
 
-    /// <summary>
-    /// Adjusts the target concurrency level based on CPU usage and job duration.
-    /// </summary>
-    private void UpdateConcurrency()
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ProcessSingleJob(Job job, Stopwatch sw)
     {
-        double cpuUsage = _cpuMonitor.GetCpuUsage();
-        _smoothedCpu = (SmoothingFactor * cpuUsage) + (1 - SmoothingFactor) * _smoothedCpu;
-        Metrics.UpdateSmoothedCpu(_smoothedCpu);
-        OnCpuUsageChange?.Invoke(_smoothedCpu);
+        sw.Restart();
+        try
+        {
+            job.Action(job.Data);
+        }
+        catch (Exception ex)
+        {
+            OnException?.Invoke(ex);
+        }
+        sw.Stop();
+        
+        _metrics.AddJobDuration(sw.Elapsed.TotalMilliseconds);
+        Interlocked.Increment(ref _totalProcessedCount.Value);
+    }
 
-        int maxConcurrency = _settings.MaxDegreeOfParallelism ?? Environment.ProcessorCount;
-
+    private void AdjustConcurrency(int maxConcurrency)
+    {
         if (_cpuMonitor is NullCpuMonitor)
         {
             _targetConcurrency = maxConcurrency;
-            _isInitialRampUp = false;
             return;
         }
 
-        switch (_settings.ScalingBehavior)
-        {
-            case ScalingBehavior.Aggressive:
-                HandleAggressiveScaling(maxConcurrency);
-                break;
-            case ScalingBehavior.Normal:
-                HandleNormalScaling(maxConcurrency);
-                break;
-            case ScalingBehavior.Gradual:
-            default:
-                HandleGradualScaling(maxConcurrency);
-                break;
-        }
-
-        _lastAverageDuration = Metrics.AvgTaskTime;
-    }
-
-    private void HandleAggressiveScaling(int maxConcurrency)
-    {
-        if (_isInitialRampUp)
-        {
-            _targetConcurrency = maxConcurrency;
-            _isInitialRampUp = false;
-        }
-
-        if (_smoothedCpu > _maxCpuUsage && _targetConcurrency > 1)
-        {
-            _targetConcurrency--;
-        }
-        else if (_smoothedCpu < _maxCpuUsage && _targetConcurrency < maxConcurrency)
-        {
-            int increaseAmount = Math.Max(1, (maxConcurrency - _targetConcurrency) / 2);
-            _targetConcurrency = Math.Min(_targetConcurrency + increaseAmount, maxConcurrency);
-        }
-    }
-
-    private void HandleNormalScaling(int maxConcurrency)
-    {
-        if (_isInitialRampUp)
-        {
-            if (_smoothedCpu < _maxCpuUsage - CpuHeadroomBuffer)
-            {
-                _targetConcurrency = maxConcurrency;
-            }
-            else if (_smoothedCpu > _maxCpuUsage)
-            {
-                _targetConcurrency = Math.Max(1, _targetConcurrency - 1);
-                _isInitialRampUp = false;
-            }
-            else
-            {
-                _isInitialRampUp = false;
-            }
-            return;
-        }
-
-        ApplyStandardScaling(maxConcurrency);
-    }
-
-    private void HandleGradualScaling(int maxConcurrency)
-    {
-        _isInitialRampUp = false;
-        ApplyStandardScaling(maxConcurrency);
-    }
-
-    private void ApplyStandardScaling(int maxConcurrency)
-    {
-        bool isCpuAboveMax = _smoothedCpu > _maxCpuUsage;
-        bool canReduceConcurrency = _targetConcurrency > 1;
-
-        if (isCpuAboveMax && canReduceConcurrency)
-        {
-            _targetConcurrency--;
-            return;
-        }
-
-        bool hasCpuHeadroom = _smoothedCpu < _maxCpuUsage - CpuHeadroomBuffer;
-        bool canIncreaseConcurrency = _targetConcurrency < maxConcurrency;
-
-        if (hasCpuHeadroom && canIncreaseConcurrency)
-        {
-            bool isJobDurationIncreasing = Metrics.AvgTaskTime > _lastAverageDuration;
-            bool hasHistoricData = _lastAverageDuration > 0;
-
-            if (isJobDurationIncreasing && canReduceConcurrency && hasHistoricData)
-            {
-                // Hold steady to avoid contention
-            }
-            else
-            {
-                bool areJobsShort = Metrics.AvgTaskTime > 0 && Metrics.AvgTaskTime < ShortJobThresholdMs;
-                int increaseAmount = areJobsShort ? 2 : 1;
-                _targetConcurrency = Math.Min(_targetConcurrency + increaseAmount, maxConcurrency);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Launches new tasks from the channel to meet the target concurrency level.
-    /// </summary>
-    private async Task LaunchWorkerTasksAsync()
-    {
-        int activeCount = Interlocked.CompareExchange(ref _activeTaskCount, 0, 0);
-        Metrics.UpdateConcurrency(activeCount);
-        Metrics.UpdateQueueLength(_jobChannel.Reader.Count);
-
-        int slotsToFill = _targetConcurrency - activeCount;
+        double cpu = _cpuMonitor.GetCpuUsage();
         
-        for (int i = 0; i < slotsToFill; i++)
-        {
-            if (_jobChannel.Reader.TryRead(out var job))
-            {
-                Interlocked.Increment(ref _activeTaskCount);
-                
-                // Launch worker without tracking the Task object
-                _ = ProcessJobAsync(job);
-            }
-            else
-            {
-                break;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Processes a single job and updates metrics.
-    /// </summary>
-    private async Task ProcessJobAsync((T Data, Action<T> Action) job)
-    {
-        var sw = Stopwatch.StartNew();
-        int itemCount = EstimateItemCount(job.Data);
-
-        try
-        {
-            // Run synchronous action on thread pool
-            await Task.Run(() => job.Action(job.Data)).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            OnException?.Invoke(ex);
-        }
-        finally
-        {
-            sw.Stop();
-            double durationMs = sw.Elapsed.TotalMilliseconds;
-            
-            Metrics.AddJobDuration(durationMs);
-            Interlocked.Decrement(ref _activeTaskCount);
-            
-            // Update batch size optimization
-            if (itemCount > 0)
-            {
-                UpdateBatchSizeOptimization(itemCount, durationMs);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Estimates the number of items in the data being processed.
-    /// Returns 0 if item count cannot be determined.
-    /// </summary>
-    private static int EstimateItemCount(T data)
-    {
-        return data switch
-        {
-            Array array => array.Length,
-            System.Collections.ICollection collection => collection.Count,
-            System.Collections.Generic.ICollection<object> genericCollection => genericCollection.Count,
-            System.Collections.Generic.IReadOnlyCollection<object> readOnlyCollection => readOnlyCollection.Count,
-            _ => 0
-        };
-    }
-
-    /// <summary>
-    /// Updates the optimal batch size recommendation based on observed execution patterns.
-    /// </summary>
-    private void UpdateBatchSizeOptimization(int itemCount, double durationMs)
-    {
-        lock (_optimizationLock)
-        {
-            double timePerItem = durationMs / itemCount;
-            
-            // Use exponential moving average for smoothing
-            const double alpha = 0.2;
-            if (_samplesCollected == 0)
-            {
-                _smoothedTimePerItem = timePerItem;
-            }
-            else
-            {
-                _smoothedTimePerItem = (alpha * timePerItem) + ((1 - alpha) * _smoothedTimePerItem);
-            }
-            
-            _samplesCollected++;
-
-            // Only update recommendation after collecting sufficient samples
-            if (_samplesCollected >= MinSamplesForOptimization)
-            {
-                int newOptimalSize = CalculateOptimalBatchSize(_smoothedTimePerItem, Metrics.AvgTaskTime, itemCount);
-                
-                if (newOptimalSize != _optimalBatchSize)
-                {
-                    _optimalBatchSize = newOptimalSize;
-                    OnOptimalBatchSizeChanged?.Invoke(_optimalBatchSize);
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Calculates the optimal batch size based on time per item and average task duration.
-    /// </summary>
-    private static int CalculateOptimalBatchSize(double timePerItem, double avgTaskDuration, int currentBatchSize)
-    {
-        if (timePerItem <= 0 || avgTaskDuration <= 0)
-            return currentBatchSize;
-
-        // If current batch is already producing tasks in the optimal range, keep it
-        if (avgTaskDuration >= TargetTaskDurationMs * 0.7 && 
-            avgTaskDuration <= TargetTaskDurationMs * 1.5)
-        {
-            return currentBatchSize;
-        }
-
-        // Calculate how many items we need to hit the target duration
-        int calculatedSize = (int)Math.Round(TargetTaskDurationMs / timePerItem);
-
-        // Prevent extreme values
-        calculatedSize = Math.Max(1, calculatedSize);
-
-        // Apply bounds based on workload characteristics
-        if (avgTaskDuration < 5) // Very light tasks (< 5ms)
-        {
-            // Need large batches to reduce overhead
-            return Math.Clamp(calculatedSize, 50, 5000);
-        }
-        else if (avgTaskDuration < 20) // Light tasks (5-20ms)
-        {
-            // Moderate batching needed
-            return Math.Clamp(calculatedSize, 10, 500);
-        }
-        else if (avgTaskDuration < TargetTaskDurationMs) // Below target (20-50ms)
-        {
-            // Small increase to reach target
-            return Math.Clamp(calculatedSize, Math.Max(1, currentBatchSize / 2), currentBatchSize * 3);
-        }
-        else if (avgTaskDuration < 200) // Near or above target (50-200ms)
-        {
-            // Tasks are good size, small adjustments only
-            return Math.Clamp(calculatedSize, Math.Max(1, currentBatchSize / 2), currentBatchSize * 2);
-        }
-        else // Heavy tasks (> 200ms)
-        {
-            // Tasks are too large, reduce batch size
-            return Math.Clamp(calculatedSize, 1, Math.Max(1, currentBatchSize / 2));
-        }
-    }
-
-    /// <summary>
-    /// Gets a human-readable recommendation for batch sizing based on current data.
-    /// </summary>
-    public string GetBatchSizeRecommendation()
-    {
-        if (!HasOptimalBatchSizeData)
-        {
-            return "Insufficient data collected. Process at least 10 batches to get a recommendation.";
-        }
-
-        double avgTaskTime = Metrics.AvgTaskTime;
+        double currentSmoothed = _smoothedCpu.Value;
+        double newSmoothed = (SmoothingFactor * cpu) + ((1.0 - SmoothingFactor) * currentSmoothed);
+        _smoothedCpu.Value = newSmoothed;
         
-        string workloadType = avgTaskTime switch
-        {
-            < 5 => "very light",
-            < 50 => "light",
-            < 200 => "medium",
-            < 500 => "heavy",
-            _ => "very heavy"
-        };
+        OnCpuUsageChange?.Invoke(newSmoothed);
 
-        if (_optimalBatchSize == 1)
+        int target = _targetConcurrency;
+        double maxCpu = _settings.MaxCpuUsage;
+
+        // More aggressive scaling down to prevent lock-up at 100%
+        if (newSmoothed > maxCpu)
         {
-            return $"Tasks are {workloadType} ({avgTaskTime:F2}ms avg). " +
-                   $"Current granularity is optimal - continue processing individual items.";
+            if (target > 1) 
+                _targetConcurrency = target - 1;
         }
-        else
+        else if (newSmoothed < (maxCpu - 5.0))
         {
-            return $"Tasks are {workloadType} ({avgTaskTime:F2}ms avg). " +
-                   $"Recommend batching {_optimalBatchSize} items together to reduce overhead " +
-                   $"and target ~{TargetTaskDurationMs}ms per task.";
+            if (target < maxConcurrency) 
+                _targetConcurrency = target + 1;
         }
     }
 }

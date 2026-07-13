@@ -8,7 +8,7 @@ Console.WriteLine("---------------------------");
 
 Console.WriteLine("Available Demos:");
 Console.WriteLine("1. SmartDataProcessor Example");
-Console.WriteLine("2. SmartDataProcessor Auto Learning");
+Console.WriteLine("2. Compare SmartProcessor Vs ActionBlock");
 Console.WriteLine("3. ActionBlock Example (from TPL Dataflow)");
 Console.WriteLine("4. Enumerable.Batch");
 Console.WriteLine("5. Enumerable.BatchSliding");
@@ -54,13 +54,13 @@ static async Task SmartDataProcessor_Example()
 
     var settings = new SmartDataProcessorSettings
     {
-        MaxCpuUsage = 95
+        MaxCpuUsage = 95,
     };
 
     using var processor = new SmartDataProcessor<int>(settings);
 
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-    var tasksCount = 1000;
+    var tasksCount = 100_000;
 
     for (int i = 0; i < tasksCount; i++)
     {
@@ -70,7 +70,7 @@ static async Task SmartDataProcessor_Example()
         {
             double sum = 0;
 
-            for (int j = 0; j < 10_000_000; j++)
+            for (int j = 0; j < 100_000; j++)
             {
                 double value = Math.Sqrt(j) * Math.Sin(j % 360) + Math.Log(j + 1);
                 if (value > 1000)
@@ -105,13 +105,13 @@ static async Task ActionBlock_Example()
 {
     Console.WriteLine("Starting data processing with ActionBlock...");
 
-    var tasksCount = 1000;
+    var tasksCount = 100_000;
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
     Action<int> processAction = data =>
     {
         double sum = 0;
-        for (int j = 0; j < 10_000_000; j++)
+        for (int j = 0; j < 100_000; j++)
         {
             double value = Math.Sqrt(j) * Math.Sin(j % 360) + Math.Log(j + 1);
             if (value > 1000)

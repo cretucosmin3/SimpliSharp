@@ -22,7 +22,7 @@ public class SmartDataProcessorSettings
     /// A multiplier to determine the queue size limit for backpressure, 
     /// based on the current number of workers.
     /// </summary>
-    public int QueueBufferMultiplier { get; set; } = 2;
+    public int QueueBufferMultiplier { get; set; } = 3;
 
     /// <summary>
     /// Determines how aggressively the processor scales up concurrency.
